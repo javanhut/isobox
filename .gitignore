@@ -1,0 +1,5 @@
+isobox
+.isobox/
+*.apk
+*.tar.gz
+/tmp/
