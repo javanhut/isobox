@@ -1,523 +1,880 @@
-# IPKG - IsoBox Package Manager
+# IsoBox Internal Package Manager
 
-IPKG is the lightweight package manager for IsoBox environments, providing per-directory package installation from Alpine Linux repositories.
+The IsoBox package manager runs **inside** the isolated environment and installs packages from Alpine Linux repositories. All package management happens from within the chroot environment, not from the host system.
 
 ## Overview
 
-IPKG manages packages within each IsoBox environment independently. Packages installed in one environment don't affect other environments or the host system.
+The package manager is a shell script (`/bin/isobox`) that runs inside each isolated environment. It downloads Alpine Linux packages and extracts them directly into the isolated filesystem.
 
 **Key Features:**
-- Install packages from Alpine Linux repository
+- Runs inside the isolated environment
+- Installs packages from Alpine Linux v3.19 repositories
+- Automatic dependency installation for common libraries
 - Per-environment package isolation
-- Simple JSON-based tracking
-- Minimal overhead
+- Simple JSON-based package tracking
+- Supports both main and community repositories
 
 ## Basic Usage
+
+All package commands run **inside** the isolated environment.
+
+### Enter the Environment
+
+```bash
+cd ~/myproject
+isobox enter
+```
+
+You're now inside the isolated environment with the `(isobox)` prompt.
 
 ### Install a Package
 
 ```bash
-isobox pkg install <package-name>
+(isobox) # isobox install <package-name>
 ```
 
 Examples:
 ```bash
-isobox pkg install curl
-isobox pkg install git
-isobox pkg install vim
-isobox pkg install python3
+(isobox) # isobox install git
+(isobox) # isobox install curl
+(isobox) # isobox install vim
+(isobox) # isobox install python3
 ```
 
 ### Remove a Package
 
 ```bash
-isobox pkg remove <package-name>
+(isobox) # isobox remove <package-name>
 ```
 
 Example:
 ```bash
-isobox pkg remove curl
+(isobox) # isobox remove git
 ```
+
+Note: This removes the package from the database but does not delete files.
 
 ### List Installed Packages
 
 ```bash
-isobox pkg list
+(isobox) # isobox list
 ```
 
 Output:
 ```
 Installed packages:
-  curl (8.5.0-r0) - Package curl from Alpine
-  git (2.43.0-r0) - Package git from Alpine
-  vim (9.0.2116-r0) - Package vim from Alpine
+  git (latest) - installed 2025-10-03T14:00:00Z
+  curl (latest) - installed 2025-10-03T14:15:00Z
 ```
 
 ### Update Package Index
 
 ```bash
-isobox pkg update
+(isobox) # isobox update
 ```
 
-This updates the repository metadata (currently informational).
+This displays information about updating the package index.
+
+### Show Help
+
+```bash
+(isobox) # isobox help
+```
 
 ## How It Works
 
-### Package Source
+### Package Sources
 
-IPKG uses Alpine Linux packages as its source:
+The package manager uses Alpine Linux v3.19 repositories:
 
-**Repository:** https://dl-cdn.alpinelinux.org/alpine/v3.19/main
+**Main Repository:** https://dl-cdn.alpinelinux.org/alpine/v3.19/main/x86_64/
+**Community Repository:** https://dl-cdn.alpinelinux.org/alpine/v3.19/community/x86_64/
 
-Alpine packages are chosen because:
+Alpine packages are used because:
 - **Small size**: Built with musl libc (smaller than glibc)
 - **Security**: Security-focused distribution
-- **Compatibility**: Works well in isolated environments
-- **Active**: Well-maintained and updated
-- **Complete**: Large package selection
+- **Compatibility**: Works in isolated environments with musl
+- **Complete**: Large package selection across main and community repos
+- **Actively maintained**: Regular updates and security patches
 
 ### Installation Process
 
-1. **Check**: Verify package isn't already installed
-2. **Download**: Fetch APK file from Alpine repository
-3. **Extract**: Unpack to `.isobox/` directory
-4. **Register**: Add to package database
-5. **Complete**: Binary available in environment
+1. **Check if installed**: Query the package database
+2. **Search repositories**: Look in main repo, then community repo if not found
+3. **Download package**: Fetch .apk file using wget or curl
+4. **Extract package**: Unpack directly to `/` (which is the isolated root)
+5. **Install dependencies**: Auto-install pcre2 and zlib on first package install
+6. **Update database**: Add package entry to `/var/lib/ipkg/installed.json`
+7. **Cleanup**: Remove downloaded .apk file
+
+### Automatic Dependency Installation
+
+During initialization (`isobox init`), the following are automatically installed:
+
+**Core Libraries:**
+- musl libc (required for all Alpine packages)
+- libssl3 and libcrypto3 (SSL/TLS support)
+- ca-certificates-bundle (SSL certificates)
+- zlib (compression library)
+- pcre2 (regex library)
+- libidn2 and libunistring (internationalization)
+
+**Tools:**
+- BusyBox (150+ Unix commands)
+- Alpine wget (SSL-capable for package downloads)
+
+When you install your first package, the package manager also installs common dependencies (pcre2, zlib) if not already marked as installed.
 
 ### Package Database
 
-Located at: `.isobox/var/lib/ipkg/installed.json`
+**Location:** `/var/lib/ipkg/installed.json`
 
-Format:
+This is inside the isolated environment, so from the host it's at `.isobox/var/lib/ipkg/installed.json`.
+
+**Format:**
 ```json
 [
   {
+    "name": "git",
+    "version": "latest",
+    "installed": "2025-10-03T14:00:00Z"
+  },
+  {
     "name": "curl",
-    "version": "8.5.0-r0",
-    "description": "Package curl from Alpine",
-    "files": ["/usr/bin/curl"]
+    "version": "latest",
+    "installed": "2025-10-03T14:15:00Z"
   }
 ]
 ```
 
 ## Environment-Specific Packages
 
-Each IsoBox environment maintains its own package database:
+Each IsoBox environment has its own package manager and database:
 
 ```
 project-a/
 └── .isobox/
-    └── var/lib/ipkg/installed.json    (curl, git)
+    ├── bin/isobox              # Package manager script
+    └── var/lib/ipkg/
+        └── installed.json      # Contains: git, vim
 
 project-b/
 └── .isobox/
-    └── var/lib/ipkg/installed.json    (vim, python3)
+    ├── bin/isobox              # Separate package manager
+    └── var/lib/ipkg/
+        └── installed.json      # Contains: python3, curl
 ```
 
-Installing a package in `project-a` doesn't affect `project-b`.
+Installing packages in `project-a` doesn't affect `project-b`.
 
 ## Common Packages
 
 ### Development Tools
 
 ```bash
-isobox pkg install git
-isobox pkg install gcc
-isobox pkg install make
-isobox pkg install cmake
+(isobox) # isobox install git
+(isobox) # isobox install make
+(isobox) # isobox install gcc
+(isobox) # isobox install cmake
 ```
 
 ### Networking Tools
 
 ```bash
-isobox pkg install curl
-isobox pkg install wget
-isobox pkg install openssh-client
-isobox pkg install netcat-openbsd
+(isobox) # isobox install curl
+(isobox) # isobox install wget
+(isobox) # isobox install openssh-client
+(isobox) # isobox install netcat-openbsd
 ```
 
 ### Text Editors
 
 ```bash
-isobox pkg install vim
-isobox pkg install nano
-isobox pkg install emacs
+(isobox) # isobox install vim
+(isobox) # isobox install nano
+(isobox) # isobox install emacs
 ```
 
 ### Programming Languages
 
 ```bash
-isobox pkg install python3
-isobox pkg install nodejs
-isobox pkg install ruby
-isobox pkg install go
+(isobox) # isobox install python3
+(isobox) # isobox install nodejs
+(isobox) # isobox install ruby
+(isobox) # isobox install go
 ```
 
 ### Text Processing
 
 ```bash
-isobox pkg install grep
-isobox pkg install sed
-isobox pkg install awk
-isobox pkg install jq
+(isobox) # isobox install grep
+(isobox) # isobox install sed
+(isobox) # isobox install gawk
+(isobox) # isobox install jq
 ```
 
 ### Build Tools
 
 ```bash
-isobox pkg install gcc
-isobox pkg install g++
-isobox pkg install make
-isobox pkg install cmake
-isobox pkg install autoconf
+(isobox) # isobox install gcc
+(isobox) # isobox install g++
+(isobox) # isobox install make
+(isobox) # isobox install cmake
+(isobox) # isobox install autoconf
 ```
 
-## Advanced Usage
+## Complete Workflows
 
-### Finding Packages
+### Development Environment
+
+```bash
+# From host
+mkdir ~/myproject
+cd ~/myproject
+isobox init
+isobox enter
+
+# Inside environment
+(isobox) # isobox install git
+(isobox) # isobox install vim
+(isobox) # isobox install make
+(isobox) # isobox install gcc
+
+# Use the tools
+(isobox) # git --version
+(isobox) # vim --version
+(isobox) # exit
+```
+
+### Build Environment
+
+```bash
+# From host
+mkdir ~/build-env
+cd ~/build-env
+isobox init
+isobox enter
+
+# Inside environment
+(isobox) # isobox install gcc
+(isobox) # isobox install make
+(isobox) # isobox install cmake
+(isobox) # isobox install git
+(isobox) # exit
+```
+
+### Python Development
+
+```bash
+# From host
+mkdir ~/pyproject
+cd ~/pyproject
+isobox init
+isobox enter
+
+# Inside environment
+(isobox) # isobox install python3
+(isobox) # isobox install py3-pip
+(isobox) # isobox install python3-dev
+(isobox) # python3 --version
+(isobox) # pip --version
+(isobox) # exit
+```
+
+### Web Development
+
+```bash
+# From host
+mkdir ~/webapp
+cd ~/webapp
+isobox init
+isobox enter
+
+# Inside environment
+(isobox) # isobox install nodejs
+(isobox) # isobox install npm
+(isobox) # isobox install git
+(isobox) # isobox install curl
+(isobox) # node --version
+(isobox) # npm --version
+(isobox) # exit
+```
+
+## Finding Packages
 
 Search Alpine packages online:
 https://pkgs.alpinelinux.org/packages
 
-Or use the command line (from host):
+Search for a specific package:
+```
+https://pkgs.alpinelinux.org/packages?name=<package>&branch=v3.19
+```
+
+Examples:
+- https://pkgs.alpinelinux.org/packages?name=git&branch=v3.19
+- https://pkgs.alpinelinux.org/packages?name=python3&branch=v3.19
+- https://pkgs.alpinelinux.org/packages?name=nodejs&branch=v3.19
+
+## Repository Search Order
+
+When you install a package, the package manager:
+
+1. Searches the **main** repository first
+2. If not found, searches the **community** repository
+3. If not found in either, reports an error
+
+Example:
 ```bash
-curl -s "https://pkgs.alpinelinux.org/packages?name=curl&branch=v3.19" | grep -o 'href="/packages/[^"]*"'
+(isobox) # isobox install git
+Installing git (host: Arch Linux)...
+Downloading from Alpine Linux repository...
+Fetching package list...
+Downloading git-2.43.7-r0.apk...
+Extracting package...
+Successfully installed git
 ```
 
-### Multiple Package Installation
+If package is in community repo:
+```bash
+(isobox) # isobox install nodejs
+Installing nodejs (host: Arch Linux)...
+Downloading from Alpine Linux repository...
+Fetching package list...
+Warning: Package not found in main repo, trying community repo...
+Downloading nodejs-20.10.0-r1.apk...
+Extracting package...
+Successfully installed nodejs
+```
+
+## Dependency Management
+
+### Automatic Dependencies
+
+The package manager automatically handles:
+
+**During `isobox init`:**
+- musl libc (required for all Alpine packages)
+- SSL libraries (libssl3, libcrypto3)
+- CA certificates (ca-certificates-bundle)
+- Base libraries (zlib, pcre2, libidn2, libunistring)
+
+**During first package install:**
+- pcre2 (regex support)
+- zlib (compression support)
+
+These are installed once and marked with a flag file at `/var/lib/ipkg/.alpine_deps_installed`.
+
+### Package-Specific Dependencies
+
+Some packages have specific dependencies you need to install manually:
+
+**Python development:**
+```bash
+(isobox) # isobox install python3
+(isobox) # isobox install py3-pip
+(isobox) # isobox install python3-dev
+(isobox) # isobox install gcc
+(isobox) # isobox install musl-dev
+```
+
+**Node.js development:**
+```bash
+(isobox) # isobox install nodejs
+(isobox) # isobox install npm
+```
+
+**Git with SSH:**
+```bash
+(isobox) # isobox install git
+(isobox) # isobox install openssh-client
+```
+
+## Package Database Operations
+
+### View Database from Host
 
 ```bash
-isobox pkg install git
-isobox pkg install curl
-isobox pkg install vim
+cat .isobox/var/lib/ipkg/installed.json
 ```
 
-Or in a script:
-```bash
-for pkg in git curl vim python3; do
-  isobox pkg install $pkg
-done
-```
-
-### Package Dependencies
-
-IPKG does **not** automatically resolve dependencies. You must install them manually.
-
-Example for Python development:
-```bash
-isobox pkg install python3
-isobox pkg install py3-pip
-isobox pkg install python3-dev
-```
-
-### Checking Package Availability
-
-Before installing, verify the package exists:
+### View Database from Inside Environment
 
 ```bash
-curl -I https://dl-cdn.alpinelinux.org/alpine/v3.19/main/x86_64/<package>.apk
+(isobox) # cat /var/lib/ipkg/installed.json
 ```
 
-If you get a 200 response, the package exists.
+### Format with jq
 
-### Package Versions
-
-IPKG always installs the latest version from the configured Alpine repository. Version pinning is not currently supported.
-
-To use a different Alpine version, you would need to modify the source code (see Technical Details).
-
-## Environment Workflows
-
-### Setting Up a Development Environment
-
+If jq is installed:
 ```bash
-cd ~/myproject
-isobox init
-
-isobox pkg install git
-isobox pkg install vim
-isobox pkg install make
-isobox pkg install gcc
-
-isobox enter
+(isobox) # isobox install jq
+(isobox) # cat /var/lib/ipkg/installed.json | jq
 ```
 
-### Creating a Build Environment
-
-```bash
-cd ~/build-env
-isobox init
-
-isobox pkg install gcc
-isobox pkg install make
-isobox pkg install cmake
-isobox pkg install git
-
-isobox enter
-```
-
-### Setting Up a Scripting Environment
-
-```bash
-cd ~/scripts
-isobox init
-
-isobox pkg install bash
-isobox pkg install curl
-isobox pkg install jq
-isobox pkg install python3
-
-isobox enter
-```
-
-## Package Database
-
-### Location
-
-Each environment has its own database:
-```
-.isobox/var/lib/ipkg/installed.json
-```
-
-### Schema
-
+Output:
 ```json
 [
   {
-    "name": "string",        // Package name
-    "version": "string",     // Version from Alpine
-    "description": "string", // Description
-    "files": ["string"]      // Installed files (limited tracking)
+    "name": "git",
+    "version": "latest",
+    "installed": "2025-10-03T14:00:00Z"
   }
 ]
 ```
 
-### Manual Inspection
+### Manual Database Editing
 
+Not recommended, but possible:
 ```bash
-cat .isobox/var/lib/ipkg/installed.json | jq
+(isobox) # vi /var/lib/ipkg/installed.json
 ```
 
-### Manual Editing
-
-Not recommended, but you can manually edit the database:
-
-```bash
-vim .isobox/var/lib/ipkg/installed.json
-```
-
-## Limitations
-
-### 1. No Dependency Resolution
-
-You must manually install dependencies:
-
-```bash
-isobox pkg install python3
-isobox pkg install py3-pip
-```
-
-### 2. No Version Pinning
-
-Always installs the latest version from Alpine v3.19.
-
-### 3. No Package Verification
-
-No GPG signature checking (planned for future).
-
-### 4. Limited File Tracking
-
-The `files` array in the database is not fully populated during installation.
-
-### 5. Basic Removal
-
-`pkg remove` only removes the database entry, not the actual files (planned for future).
-
-### 6. No Search
-
-No built-in package search (use Alpine website).
-
-### 7. Single Repository
-
-Only supports one Alpine repository at a time.
+The database is plain JSON, so you can manually add or remove entries if needed.
 
 ## Troubleshooting
 
 ### Package Not Found
 
-**Error:** `download failed: 404 Not Found`
+**Error:** `Error: Package <name> not found in Alpine repositories`
 
-**Cause:** Package doesn't exist in Alpine repository
+**Causes:**
+- Package name is misspelled
+- Package doesn't exist in Alpine v3.19
+- Package is in a different repository (testing, edge)
 
-**Solution:** 
-1. Search for the correct package name: https://pkgs.alpinelinux.org/packages
-2. Check spelling
-3. Try alternative package names (e.g., `python3` not `python`)
+**Solutions:**
+1. Check spelling of package name
+2. Search Alpine package database: https://pkgs.alpinelinux.org/packages
+3. Try alternative names (e.g., `python3` not `python`)
+4. Check if package exists in v3.19 specifically
 
-### Download Fails
+### Download Failed
 
-**Error:** `download failed: connection refused`
+**Error:** `Error: Failed to download package`
 
-**Cause:** No internet connection or repository down
+**Causes:**
+- No internet connection
+- Repository is down
+- DNS not working inside environment
+
+**Solutions:**
+1. Check internet from host: `ping dl-cdn.alpinelinux.org`
+2. Check DNS inside environment: `(isobox) # cat /etc/resolv.conf`
+3. Verify wget/curl is working: `(isobox) # wget --version`
+4. Try again later if repository is temporarily down
+
+### Extract Failed
+
+**Error:** `Error: Failed to extract package`
+
+**Causes:**
+- Corrupted download
+- Insufficient permissions
+- tar not available
+
+**Solutions:**
+1. Try reinstalling: `(isobox) # isobox remove <pkg> && isobox install <pkg>`
+2. Check available space: `(isobox) # df -h`
+3. Verify tar is available: `(isobox) # which tar`
+
+### wget or curl Not Found
+
+**Error:** `Error: wget or curl required for package installation`
+
+**Cause:** Both wget and curl are missing from the environment
 
 **Solution:**
-1. Check internet: `ping 8.8.8.8`
-2. Check repository: `curl https://dl-cdn.alpinelinux.org/alpine/`
-3. Use cached or system binaries
+This should not happen after `isobox init` because Alpine wget is automatically installed. If it does:
 
-### Extraction Fails
+```bash
+# From host
+cd ~/myproject
+isobox destroy
+isobox init
+```
 
-**Error:** `extract failed`
-
-**Cause:** `tar` not available or corrupted download
-
-**Solution:**
-1. Ensure `tar` is available: `which tar`
-2. Delete and retry: `rm /tmp/<package>.apk`
-3. Install tar: `isobox pkg install tar`
-
-### Permission Denied
-
-**Error:** `permission denied`
-
-**Cause:** Insufficient permissions to write to `.isobox/`
-
-**Solution:**
-1. Check ownership: `ls -la .isobox`
-2. Fix permissions: `chmod -R u+w .isobox`
+This rebuilds the environment with all required tools.
 
 ### Package Already Installed
 
-**Message:** `Package X is already installed`
+**Message:** `Package <name> is already installed`
 
-**Cause:** Package is in the database
+**Cause:** Package exists in database
 
 **Solution:**
-1. Remove first: `isobox pkg remove X`
-2. Then reinstall: `isobox pkg install X`
+If you want to reinstall:
+```bash
+(isobox) # isobox remove <package>
+(isobox) # isobox install <package>
+```
+
+### Library Errors After Install
+
+**Error:** `error while loading shared libraries: libfoo.so.1`
+
+**Cause:** Package depends on libraries not in the base dependencies
+
+**Solution:**
+1. Identify missing library: `(isobox) # ldd /usr/bin/<binary>`
+2. Search for package providing library: https://pkgs.alpinelinux.org/contents
+3. Install the library package: `(isobox) # isobox install <library-package>`
+
+Common library packages:
+- `libssl3` - SSL/TLS
+- `libcrypto3` - Cryptography
+- `pcre2` - Regular expressions
+- `zlib` - Compression
+- `ncurses-libs` - Terminal UI
+- `readline` - Command-line editing
 
 ## Technical Details
 
+### Package Manager Script Location
+
+Inside environment: `/bin/isobox`
+From host: `.isobox/bin/isobox`
+
+This is a POSIX shell script that runs inside the chroot environment.
+
 ### APK File Format
 
-Alpine packages (.apk) are tar.gz archives containing:
-- `/usr/bin/`, `/usr/lib/`, etc. - Package files
-- `.PKGINFO` - Package metadata
-- `.trigger` - Installation triggers (optional)
+Alpine packages (.apk) are gzip-compressed tar archives containing:
 
-IPKG extracts the entire archive to `.isobox/`.
+```
+package-name-version.apk
+├── .PKGINFO          # Package metadata
+├── .trigger          # Installation triggers (optional)
+├── usr/
+│   ├── bin/          # Executables
+│   ├── lib/          # Libraries
+│   └── share/        # Data files
+└── etc/              # Configuration files
+```
+
+The package manager extracts the entire archive to `/` (the isolated root).
 
 ### Download URL Structure
 
 ```
-https://dl-cdn.alpinelinux.org/alpine/v3.19/main/x86_64/<package>.apk
+https://dl-cdn.alpinelinux.org/alpine/v3.19/{repo}/x86_64/{package}.apk
 ```
 
-- `v3.19`: Alpine version
-- `main`: Repository branch
-- `x86_64`: Architecture
-- `<package>.apk`: Package file
+Components:
+- `v3.19` - Alpine version
+- `{repo}` - Repository: `main` or `community`
+- `x86_64` - Architecture
+- `{package}` - Package filename with version
+
+Example:
+```
+https://dl-cdn.alpinelinux.org/alpine/v3.19/main/x86_64/git-2.43.7-r0.apk
+```
+
+### Package Discovery
+
+The script scrapes the repository index HTML:
+1. Fetch repository index page with wget/curl
+2. Parse HTML for package links matching pattern: `href="<package>-[0-9]`
+3. Extract the first matching package filename
+4. Construct full download URL
+5. Download and extract
 
 ### Database Operations
 
-All operations are atomic:
-1. Read entire database
-2. Modify in memory
-3. Write back to disk
+All database operations use either jq (if available) or sed:
 
-This ensures consistency even if interrupted.
-
-### Fallback Mechanism
-
-If download fails, IPKG attempts to use the system `apk` command:
-
+**Add package (with jq):**
 ```bash
-apk add --root .isobox --initdb <package>
+jq ". += [{\"name\": \"$pkg\", \"version\": \"latest\", \"installed\": \"$date\"}]" installed.json
 ```
 
-This requires `apk` to be installed on the host.
+**Add package (with sed):**
+```bash
+sed -i 's/\]$/,{"name":"'$pkg'","version":"latest","installed":"'$date'"}]/' installed.json
+```
 
-## Future Enhancements
+**Remove package (with jq):**
+```bash
+jq "map(select(.name != \"$pkg\"))" installed.json
+```
 
-Planned features:
+### Cache Location
 
-1. **Dependency Resolution**: Automatic dependency installation
-2. **GPG Verification**: Package signature checking
-3. **Version Pinning**: Install specific versions
-4. **Package Search**: Built-in search functionality
-5. **Complete File Tracking**: Full file manifest
-6. **Clean Removal**: Remove package files on `pkg remove`
-7. **Multiple Repositories**: Support for additional repos
-8. **Package Caching**: Local cache for faster reinstallation
-9. **Upgrade Command**: `pkg upgrade` to update packages
-10. **Lock File**: Prevent concurrent modifications
+Downloaded packages are temporarily stored at:
+```
+/var/cache/isobox/<package>.apk
+```
 
-## Contributing
+This cache is inside the isolated environment, so from the host:
+```
+.isobox/var/cache/isobox/<package>.apk
+```
 
-To add features to IPKG:
+Packages are deleted immediately after extraction to save space.
 
-1. Edit `pkg/ipkg/manager.go`
-2. Test thoroughly in multiple environments
-3. Update this documentation
-4. Submit a pull request
+## Limitations
+
+### 1. No Full Dependency Resolution
+
+Only base libraries (pcre2, zlib) are auto-installed. Other dependencies must be installed manually.
+
+Example:
+```bash
+# Wrong - may fail with missing dependencies
+(isobox) # isobox install gcc
+
+# Right - install dependencies first
+(isobox) # isobox install musl-dev
+(isobox) # isobox install binutils
+(isobox) # isobox install gcc
+```
+
+### 2. No Version Pinning
+
+Always installs the latest version from Alpine v3.19 repositories. You cannot specify a version.
+
+### 3. No Package Verification
+
+No GPG signature checking. Packages are downloaded over HTTPS but signatures are not verified.
+
+### 4. Basic Removal
+
+`isobox remove <package>` only removes the database entry. Files remain on disk.
+
+To fully remove:
+```bash
+# From host
+sudo rm -rf .isobox/usr/bin/<binary>
+sudo rm -rf .isobox/usr/lib/<libraries>
+```
+
+### 5. No Search Command
+
+No built-in package search. Use the Alpine package website:
+https://pkgs.alpinelinux.org/packages
+
+### 6. No Upgrade Command
+
+No way to upgrade packages. To update a package:
+```bash
+(isobox) # isobox remove <package>
+(isobox) # isobox install <package>
+```
+
+### 7. No Conflict Detection
+
+If two packages provide the same file, the last one installed wins (files are overwritten).
+
+### 8. Architecture Locked to x86_64
+
+Only x86_64 packages are supported. No ARM, ARM64, or other architectures.
+
+## Best Practices
+
+### 1. Initialize Before Installing
+
+Always run `isobox init` before entering the environment:
+```bash
+mkdir ~/myproject
+cd ~/myproject
+isobox init
+isobox enter
+```
+
+### 2. Install Packages Inside Environment
+
+Package commands only work inside the environment:
+```bash
+# Wrong - from host
+isobox install git
+
+# Right - from inside
+isobox enter
+(isobox) # isobox install git
+```
+
+### 3. Document Package Dependencies
+
+Keep a list of packages in a script or README:
+```bash
+#!/bin/sh
+# setup-env.sh
+isobox install git
+isobox install vim
+isobox install make
+isobox install gcc
+```
+
+### 4. One Environment Per Project
+
+Don't share environments across projects:
+```
+~/project-a/.isobox    # Separate environment
+~/project-b/.isobox    # Separate environment
+```
+
+### 5. Don't Commit .isobox/
+
+Add to `.gitignore`:
+```
+.isobox/
+```
+
+Environments are easily recreated with `isobox init`.
+
+### 6. Install Common Dependencies First
+
+For development, install base tools first:
+```bash
+(isobox) # isobox install git
+(isobox) # isobox install vim
+(isobox) # isobox install make
+```
+
+Then install project-specific packages.
+
+### 7. Check Package Availability
+
+Before installing, verify the package exists:
+```
+https://pkgs.alpinelinux.org/packages?name=<package>&branch=v3.19
+```
+
+This prevents failed installations.
 
 ## Examples
 
 ### Full Python Environment
 
 ```bash
+# From host
+mkdir ~/pyproject
+cd ~/pyproject
 isobox init
-isobox pkg install python3
-isobox pkg install py3-pip
-isobox pkg install python3-dev
-isobox pkg install gcc
-isobox pkg install musl-dev
 isobox enter
-python3 -m pip install requests
+
+# Inside environment
+(isobox) # isobox install python3
+(isobox) # isobox install py3-pip
+(isobox) # isobox install python3-dev
+(isobox) # isobox install gcc
+(isobox) # isobox install musl-dev
+
+# Use Python
+(isobox) # python3 --version
+(isobox) # pip install requests
+(isobox) # python3 -c "import requests; print(requests.__version__)"
+(isobox) # exit
 ```
 
-### Web Development Tools
+### Full Node.js Environment
 
 ```bash
+# From host
+mkdir ~/nodeapp
+cd ~/nodeapp
 isobox init
-isobox pkg install nodejs
-isobox pkg install npm
-isobox pkg install git
-isobox pkg install curl
 isobox enter
+
+# Inside environment
+(isobox) # isobox install nodejs
+(isobox) # isobox install npm
+(isobox) # isobox install git
+
+# Use Node
+(isobox) # node --version
+(isobox) # npm --version
+(isobox) # npm init -y
+(isobox) # npm install express
+(isobox) # exit
 ```
 
-### System Administration
+### System Administration Tools
 
 ```bash
+# From host
+mkdir ~/sysadmin
+cd ~/sysadmin
 isobox init
-isobox pkg install bash
-isobox pkg install coreutils
-isobox pkg install findutils
-isobox pkg install grep
-isobox pkg install sed
-isobox pkg install awk
 isobox enter
+
+# Inside environment
+(isobox) # isobox install bash
+(isobox) # isobox install coreutils
+(isobox) # isobox install findutils
+(isobox) # isobox install grep
+(isobox) # isobox install sed
+(isobox) # isobox install gawk
+(isobox) # isobox install curl
+(isobox) # isobox install jq
+
+# Use tools
+(isobox) # bash --version
+(isobox) # ls --version
+(isobox) # grep --version
+(isobox) # exit
 ```
 
-## Best Practices
+### Build Environment for C/C++
 
-1. **Initialize first**: Always `isobox init` before installing packages
-2. **Document dependencies**: Keep track of required packages
-3. **One environment per project**: Don't share environments
-4. **Check availability**: Verify packages exist before installing
-5. **Manual dependencies**: Install dependencies explicitly
-6. **Clean environments**: Remove unused packages
-7. **Don't commit**: Add `.isobox/` to `.gitignore`
+```bash
+# From host
+mkdir ~/build
+cd ~/build
+isobox init
+isobox enter
 
-## Comparison
+# Inside environment
+(isobox) # isobox install gcc
+(isobox) # isobox install g++
+(isobox) # isobox install make
+(isobox) # isobox install cmake
+(isobox) # isobox install git
+(isobox) # isobox install musl-dev
 
-| Feature | IPKG | APK | apt | npm |
-|---------|------|-----|-----|-----|
-| Scope | Environment | System | System | Project |
-| Dependencies | Manual | Auto | Auto | Auto |
-| Database | JSON | SQLite | dpkg | package.json |
-| Size | Tiny | Small | Large | Medium |
-| Speed | Fast | Fast | Medium | Medium |
+# Build a project
+(isobox) # git clone https://github.com/user/project.git
+(isobox) # cd project
+(isobox) # make
+(isobox) # exit
+```
 
-IPKG is designed for simplicity and isolation, not to replace system package managers.
+## Comparison with Other Package Managers
+
+| Feature | IsoBox | apk | apt | npm | pip |
+|---------|--------|-----|-----|-----|-----|
+| Scope | Per-directory | System | System | Project | Project |
+| Isolation | Complete | None | None | Partial | Partial |
+| Dependencies | Semi-auto | Auto | Auto | Auto | Auto |
+| Database | JSON | SQLite | dpkg | package.json | Metadata |
+| Size | Tiny | Small | Large | Medium | Medium |
+| Language | Shell | C | C | JavaScript | Python |
+| Verification | None | GPG | GPG | SHA | SHA |
+
+IsoBox package manager is designed for simplicity and environment isolation, not as a replacement for full-featured system package managers.
+
+## Future Enhancements
+
+Planned improvements:
+
+1. **Full dependency resolution** - Automatically install all required packages
+2. **GPG verification** - Verify package signatures
+3. **Version pinning** - Install specific package versions
+4. **Package search** - Built-in search: `isobox search <term>`
+5. **Clean removal** - Delete files on `isobox remove`
+6. **Upgrade command** - `isobox upgrade <package>`
+7. **List available** - Show all available packages
+8. **Package info** - Display package details
+9. **Multiple architectures** - Support ARM, ARM64
+10. **Custom repositories** - Add non-Alpine repositories
+
+## Contributing
+
+To improve the package manager:
+
+1. Edit `scripts/isobox-internal.sh` (source script)
+2. Test in a clean environment
+3. Update this documentation
+4. Submit a pull request
+
+The script is installed to `.isobox/bin/isobox` during `isobox init`.

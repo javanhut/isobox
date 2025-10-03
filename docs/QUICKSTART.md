@@ -11,9 +11,10 @@ Get started with IsoBox in 5 minutes.
 
 ## Prerequisites
 
-- Linux or macOS system
+- Linux system (chroot is Linux-specific)
 - Go 1.20+ (for building from source)
-- Optional: BusyBox for full POSIX compliance
+- sudo access (required for chroot)
+- BusyBox (recommended, will be installed if not present)
 
 ## Installation
 
@@ -36,26 +37,21 @@ You should see the usage information.
 
 ### Install BusyBox (Recommended)
 
-For full POSIX compliance, install BusyBox:
+For best results, install BusyBox on your host system:
 
 **Ubuntu/Debian:**
 ```bash
 sudo apt-get install busybox-static
 ```
 
-**Alpine:**
-```bash
-apk add busybox-static
-```
-
-**macOS:**
-```bash
-brew install busybox
-```
-
 **Arch:**
 ```bash
 sudo pacman -S busybox
+```
+
+**Alpine:**
+```bash
+apk add busybox-static
 ```
 
 ## Your First Environment
@@ -76,25 +72,27 @@ isobox init
 You'll see output like:
 
 ```
-Initializing IsoBox environment in: /home/user/my-first-isobox
-  Created: .isobox
+Initializing IsoBox environment in: .
+Creating isolated Linux filesystem...
   Created: .isobox/bin
   Created: .isobox/lib
   Created: .isobox/etc
   Created: .isobox/var/lib/ipkg
-  Created: .isobox/var/log
-  Created: .isobox/tmp
 
-Setting up POSIX environment...
-Using system busybox: /usr/bin/busybox
-  Installed busybox and applets
-  Created environment configuration
+Setting up POSIX binaries...
+Found BusyBox at: /usr/bin/busybox
+  Added SSL certificates
+  Added Alpine wget
+  Added Alpine ca-certificates
+  Added musl libc (for Alpine packages)
+  Added Alpine base dependencies
+  Installed BusyBox and 150+ Unix utilities
 
 IsoBox environment created successfully!
 Location: /home/user/my-first-isobox
 
 To enter the environment, run:
-  cd /home/user/my-first-isobox && isobox enter
+  cd . && isobox enter
 ```
 
 ### 3. Check What Was Created
@@ -115,10 +113,25 @@ drwxr-xr-x .isobox
 isobox enter
 ```
 
-Your prompt changes to indicate you're in IsoBox:
+You'll see a welcome banner:
 
 ```
-(isobox) user@hostname:~/my-first-isobox$
+=========================================
+   ISOBOX Isolated Environment
+=========================================
+You are in a completely isolated Linux
+environment. You CANNOT access the host
+system from here.
+
+Package Manager:
+  isobox install <package>
+  isobox remove <package>
+  isobox list
+
+Type 'exit' to leave this environment
+=========================================
+
+(isobox) root@hostname:/$
 ```
 
 ### 5. Try Some Commands
@@ -129,7 +142,7 @@ Inside the IsoBox environment:
 ls -la
 pwd
 whoami
-echo $ISOBOX_ROOT
+cat /etc/os-release
 which ls
 ```
 
@@ -143,6 +156,8 @@ You're back to your normal shell.
 
 ## Installing Packages
 
+All package management happens **inside** the isolated environment.
+
 ### 1. Enter Your Environment
 
 ```bash
@@ -152,48 +167,47 @@ isobox enter
 
 ### 2. Install a Package
 
-From within the environment OR from outside:
+From within the environment:
 
 ```bash
-isobox pkg install curl
+(isobox) # isobox install git
 ```
 
 Output:
 ```
-Installing package: curl
-Downloading from Alpine repository...
-Successfully installed curl
+Installing git (host: Arch Linux)...
+Downloading from Alpine Linux repository...
+Fetching package list...
+Downloading git-2.43.7-r0.apk...
+Extracting package...
+Installing Alpine library dependencies...
+  Installing pcre2...
+Successfully installed git
 ```
 
 ### 3. Use the Installed Package
 
 ```bash
-isobox exec curl --version
-```
-
-Or from within the environment:
-
-```bash
-isobox enter
-curl --version
+(isobox) # git --version
+git version 2.43.7
 ```
 
 ### 4. List Installed Packages
 
 ```bash
-isobox pkg list
+(isobox) # isobox list
 ```
 
 Output:
 ```
 Installed packages:
-  curl (latest) - Package curl from Alpine
+  git (latest) - installed 2025-10-03T14:00:00Z
 ```
 
 ### 5. Remove a Package
 
 ```bash
-isobox pkg remove curl
+(isobox) # isobox remove git
 ```
 
 ## Managing Multiple Environments
@@ -206,12 +220,18 @@ Each directory can have its own IsoBox environment.
 mkdir ~/project-a
 cd ~/project-a
 isobox init
-isobox pkg install git vim
+isobox enter
+(isobox) # isobox install git
+(isobox) # isobox install vim
+(isobox) # exit
 
 mkdir ~/project-b
 cd ~/project-b
 isobox init
-isobox pkg install curl wget
+isobox enter
+(isobox) # isobox install curl
+(isobox) # isobox install wget
+(isobox) # exit
 ```
 
 ### Switch Between Environments
@@ -219,22 +239,24 @@ isobox pkg install curl wget
 ```bash
 cd ~/project-a
 isobox enter
-(isobox) $ which vim
-/home/user/project-a/.isobox/bin/vim
-(isobox) $ exit
+(isobox) # which git
+/usr/bin/git
+(isobox) # exit
 
 cd ~/project-b
 isobox enter
-(isobox) $ which curl
-/home/user/project-b/.isobox/bin/curl
-(isobox) $ exit
+(isobox) # which git
+(command not found)
+(isobox) # which curl
+/usr/bin/curl
+(isobox) # exit
 ```
 
 Each environment is completely independent.
 
 ## Environment Status
 
-Check the status of your environment:
+Check the status of your environment from the host:
 
 ```bash
 cd ~/my-first-isobox
@@ -243,16 +265,20 @@ isobox status
 
 Output:
 ```
-IsoBox Environment Status
+ISOBOX Environment Status
 =========================
 
-Root Directory: /home/user/my-first-isobox
-Created: 2024-01-01 12:00:00
-Binary Path: /home/user/my-first-isobox/.isobox/bin
+Project Root: /home/user/my-first-isobox
+Isolated Root: /home/user/my-first-isobox/.isobox
+Created: 2025-10-03 14:00:00
 Available Commands: 150
+Shared Libraries: 45
 Installed Packages: 2
 
-To enter this environment:
+This is a COMPLETELY ISOLATED environment.
+The host system is NOT accessible from within.
+
+To enter:
   cd /home/user/my-first-isobox && isobox enter
 ```
 
@@ -262,9 +288,9 @@ You can execute commands in the environment without entering a shell:
 
 ```bash
 cd ~/my-first-isobox
-isobox exec ls -la
+isobox exec ls -la /
 isobox exec pwd
-isobox exec curl https://example.com
+isobox exec cat /etc/os-release
 ```
 
 ## Common Workflows
@@ -276,31 +302,29 @@ mkdir ~/myapp
 cd ~/myapp
 
 isobox init
-
-isobox pkg install git
-isobox pkg install make
-isobox pkg install gcc
-
 isobox enter
 
-git clone https://github.com/user/repo .
-make build
+(isobox) # isobox install git
+(isobox) # isobox install make
+(isobox) # git clone https://github.com/user/repo .
+(isobox) # make build
 
-exit
+(isobox) # exit
 ```
 
-### Testing Different Versions
+### Testing Environment
 
 ```bash
-mkdir ~/test-env-1
-cd ~/test-env-1
-isobox init
-isobox pkg install python3
+mkdir ~/test-env
+cd ~/test-env
 
-mkdir ~/test-env-2
-cd ~/test-env-2
 isobox init
-isobox pkg install python3
+isobox enter
+
+(isobox) # isobox install python3
+(isobox) # python3 --version
+
+(isobox) # exit
 ```
 
 ### Quick Script Environment
@@ -308,17 +332,20 @@ isobox pkg install python3
 ```bash
 mkdir ~/scripts
 cd ~/scripts
-isobox init
-isobox pkg install bash coreutils grep sed awk
 
-cat > script.sh << 'EOF'
-#!/bin/bash
+isobox init
+isobox enter
+
+(isobox) # cat > script.sh << 'EOF'
+#!/bin/sh
 echo "Running in IsoBox"
 ls -la | grep "isobox"
 EOF
 
-chmod +x script.sh
-isobox exec ./script.sh
+(isobox) # chmod +x script.sh
+(isobox) # ./script.sh
+
+(isobox) # exit
 ```
 
 ## Directory Structure
@@ -328,16 +355,28 @@ After initialization, your directory contains:
 ```
 my-first-isobox/
 ├── .isobox/
-│   ├── bin/              # POSIX binaries (150+ commands)
+│   ├── bin/              # POSIX binaries (BusyBox + symlinks)
 │   │   ├── busybox
-│   │   ├── sh
-│   │   ├── bash
-│   │   ├── ls
+│   │   ├── sh -> busybox
+│   │   ├── ls -> busybox
+│   │   ├── cat -> busybox
 │   │   └── ...
-│   ├── lib/              # Libraries
+│   ├── usr/
+│   │   └── bin/
+│   │       ├── wget      # Alpine wget (SSL capable)
+│   │       └── git       # Installed packages
+│   ├── lib/              # musl libc and libraries
+│   │   ├── ld-musl-x86_64.so.1
+│   │   └── libc.musl-x86_64.so.1
+│   ├── usr/lib/          # Additional libraries
 │   ├── etc/              # Configuration
-│   │   ├── profile       # Shell environment setup
-│   │   └── environment   # Environment variables
+│   │   ├── passwd
+│   │   ├── group
+│   │   ├── hosts
+│   │   ├── resolv.conf
+│   │   ├── bash.bashrc
+│   │   ├── profile
+│   │   └── os-release
 │   ├── var/
 │   │   └── lib/ipkg/
 │   │       └── installed.json  # Package database
@@ -354,25 +393,36 @@ cd ~/my-first-isobox
 isobox destroy
 ```
 
-This removes the `.isobox` directory but keeps your files.
+This removes the `.isobox` directory but keeps your files. Uses `sudo` to handle root-owned files created during chroot operations.
 
-### Manual Cleanup
+### Manual Cleanup (if needed)
 
 ```bash
-rm -rf ~/my-first-isobox/.isobox
+sudo rm -rf ~/my-first-isobox/.isobox
 ```
 
 ## Troubleshooting
 
-### "busybox not found"
+### "BusyBox not found"
 
-If BusyBox isn't available, IsoBox falls back to creating symlinks to system binaries. Install BusyBox for best results:
+Install BusyBox on your host system:
 
 ```bash
+# Arch
+sudo pacman -S busybox
+
+# Ubuntu/Debian
 sudo apt-get install busybox-static
 ```
 
-### "environment not found"
+Then reinitialize:
+
+```bash
+isobox destroy
+isobox init
+```
+
+### "Environment not found"
 
 Make sure you're in a directory with an initialized IsoBox:
 
@@ -386,36 +436,42 @@ If `.isobox` doesn't exist, run:
 isobox init
 ```
 
-### Commands Not Found in Environment
+### "Command not found" inside environment
 
-Check if the command is in the environment:
-
-```bash
-isobox exec which <command>
-```
-
-If not found, it might need to be installed:
+Enter the environment and install the package:
 
 ```bash
-isobox pkg install <package>
+isobox enter
+(isobox) # isobox install <package>
 ```
 
-### Package Download Fails
+### Library errors
 
-Check internet connectivity:
+If you see "symbol not found" or library errors:
 
 ```bash
-curl https://dl-cdn.alpinelinux.org/alpine/v3.19/main/x86_64/
+isobox destroy
+isobox init
 ```
 
-If offline, you can't download packages. Use symlinks to system binaries instead (done automatically).
+This rebuilds the environment with the latest Alpine dependencies.
+
+### Package download fails
+
+Check internet connectivity and that you can reach Alpine repos:
+
+```bash
+ping dl-cdn.alpinelinux.org
+```
+
+Make sure port 443 (HTTPS) is not blocked.
 
 ## Next Steps
 
 Now that you know the basics:
 
 1. Read [ARCHITECTURE.md](ARCHITECTURE.md) to understand how IsoBox works
-2. Read [PACKAGE_MANAGER.md](PACKAGE_MANAGER.md) to learn about IPKG
+2. Read [PACKAGE_MANAGER.md](PACKAGE_MANAGER.md) to learn about the internal package manager
 3. Create project-specific environments
 4. Explore available packages: https://pkgs.alpinelinux.org/packages
 
@@ -424,9 +480,11 @@ Now that you know the basics:
 - IsoBox environments are directory-scoped - one per project
 - You can have unlimited environments
 - Environments are independent - changes in one don't affect others
-- `.isobox` is in `.gitignore` by default (don't commit it)
+- Don't commit `.isobox` to version control
 - BusyBox provides 150+ Unix commands in a single binary
-- Packages come from Alpine Linux repository (small, secure)
+- Packages come from Alpine Linux repository (small, secure, musl-based)
+- All package management happens inside the environment
+- Libraries are automatically resolved from Alpine repos
 
 ## Example Projects
 
@@ -436,8 +494,10 @@ Now that you know the basics:
 mkdir ~/webapp
 cd ~/webapp
 isobox init
-isobox pkg install curl wget
 isobox enter
+(isobox) # isobox install curl
+(isobox) # isobox install wget
+(isobox) # isobox install nodejs
 ```
 
 ### System Administration
@@ -446,18 +506,23 @@ isobox enter
 mkdir ~/sysadmin
 cd ~/sysadmin
 isobox init
-isobox pkg install bash grep sed awk
 isobox enter
+(isobox) # isobox install bash
+(isobox) # isobox install grep
+(isobox) # isobox install sed
+(isobox) # isobox install awk
 ```
 
-### Build Environment
+### Python Development
 
 ```bash
-mkdir ~/build
-cd ~/build
+mkdir ~/pyproject
+cd ~/pyproject
 isobox init
-isobox pkg install gcc make
 isobox enter
+(isobox) # isobox install python3
+(isobox) # isobox install py3-pip
+(isobox) # python3 --version
 ```
 
 Happy IsoBoxing!

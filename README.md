@@ -6,13 +6,18 @@ A truly isolated Linux development environment using chroot. IsoBox creates a co
 
 IsoBox creates a **completely isolated Linux environment** in a `.isobox` directory. When you enter this environment:
 
-- ❌ You CANNOT access the host filesystem
-- ❌ You CANNOT see host processes
-- ❌ You CANNOT escape to the parent system
-- ✅ You get a complete, isolated Linux environment
-- ✅ All binaries are copied into `.isobox/`
-- ✅ All libraries are copied into `.isobox/lib`
-- ✅ All packages install to `.isobox/`
+**Restrictions:**
+- You CANNOT access the host filesystem
+- You CANNOT see host processes
+- You CANNOT escape to the parent system
+- You CANNOT affect the host system
+
+**Capabilities:**
+- You get a complete, isolated Linux environment
+- All binaries are available in `.isobox/bin`
+- All libraries are in `.isobox/lib`
+- All packages install to `.isobox/`
+- Full networking with DNS configured
 
 **This is TRUE isolation** - like a lightweight container but using chroot.
 
@@ -20,10 +25,11 @@ IsoBox creates a **completely isolated Linux environment** in a `.isobox` direct
 
 - **Complete Isolation**: Cannot access host system from within
 - **Full Linux Filesystem**: Standard `/bin`, `/lib`, `/etc`, `/usr` structure
-- **Self-Contained**: All binaries and libraries copied in
-- **POSIX Compliant**: Full set of Unix commands (via BusyBox or system binaries)
-- **Package Management**: Install packages with IPKG (isolated to environment)
+- **Self-Contained**: All binaries and libraries installed automatically
+- **POSIX Compliant**: 150+ Unix commands via BusyBox
+- **Package Management**: Install Alpine Linux packages inside the environment
 - **Per-Directory**: Each project gets its own isolated environment
+- **Automatic Dependencies**: musl libc and SSL libraries installed automatically
 
 ## How It Works
 
@@ -95,18 +101,26 @@ bin  boot  dev  etc  home  lib  lib64  mnt  opt  proc  root  run  sbin  srv  sys
 
 ## Commands
 
+### Host Commands
+
 ```bash
 isobox init [path]        # Initialize isolated environment
 isobox enter              # Enter isolated environment (uses sudo chroot)
 isobox exec <cmd>         # Execute command in isolation (uses sudo chroot)
 isobox status             # Show environment status
-isobox destroy            # Remove isolated environment
+isobox destroy            # Remove isolated environment (uses sudo)
+```
 
-# Package management
-isobox pkg install <pkg>  # Install package to isolated environment
-isobox pkg remove <pkg>   # Remove package
-isobox pkg list           # List installed packages
-isobox pkg update         # Update package index
+### Inside Environment Commands
+
+Once inside the environment with `isobox enter`:
+
+```bash
+isobox install <package>  # Install Alpine package
+isobox remove <package>   # Remove package
+isobox list              # List installed packages
+isobox update            # Update package index
+isobox help              # Show help
 ```
 
 ## Requirements
@@ -158,36 +172,41 @@ Without BusyBox, IsoBox will copy system binaries instead (larger, more dependen
    └── home/
    ```
 
-2. **Binaries copied**:
-   - If BusyBox found: Single busybox binary + 150+ symlinks
-   - Otherwise: Copies essential commands from system
+2. **Binaries installed**:
+   - BusyBox: 150+ Unix commands via symlinks
+   - Alpine wget: SSL-capable for package downloads
+   - Internal package manager: `/bin/isobox` script
 
-3. **Libraries copied**:
-   - Automatically detects and copies shared libraries needed by binaries
-   - Uses `ldd` to find dependencies
+3. **Libraries installed**:
+   - musl libc: Required for Alpine packages
+   - libssl3 & libcrypto3: SSL/TLS support
+   - pcre2, zlib: Common dependencies
+   - libidn2, libunistring: Internationalization support
 
 4. **Configuration files**:
-   - `/etc/passwd`, `/etc/group` (minimal)
+   - `/etc/passwd`, `/etc/group`, `/etc/shadow`, `/etc/gshadow`
    - `/etc/hosts`, `/etc/resolv.conf` (networking)
    - `/etc/bash.bashrc`, `/etc/profile` (shell config)
+   - `/etc/os-release` (system identification)
+   - `/etc/ssl/certs/ca-certificates.crt` (SSL certificates)
 
 ## True Isolation
 
 ### What You CAN Do Inside:
 
-✅ Run any command in `/bin`, `/usr/bin`  
-✅ Install packages with `isobox pkg install`  
-✅ Create files in `/tmp`, `/root`  
-✅ Use networking (DNS configured)  
-✅ Everything stays in `.isobox/`
+- Run any command in `/bin`, `/usr/bin`
+- Install packages with `isobox install <package>`
+- Create files in `/tmp`, `/root`
+- Use networking (DNS configured)
+- Everything stays isolated in `.isobox/`
 
 ### What You CANNOT Do Inside:
 
-❌ Access parent directories  
-❌ See host processes  
-❌ Access host files  
-❌ Break out of the chroot jail  
-❌ Affect the host system
+- Access parent directories
+- See host processes
+- Access host files
+- Break out of the chroot jail
+- Affect the host system
 
 ## Examples
 
@@ -198,9 +217,12 @@ mkdir ~/dev-env
 cd ~/dev-env
 
 isobox init
-isobox pkg install git curl vim
-
 isobox enter
+
+# Inside the environment:
+(isobox) # isobox install git
+(isobox) # isobox install curl
+(isobox) # isobox install vim
 (isobox) # git --version
 (isobox) # curl --version
 (isobox) # ls /bin
@@ -234,22 +256,32 @@ isobox exec cat /etc/os-release
 
 ## Package Management
 
-Install packages into the isolated environment:
+IsoBox uses an internal package manager that runs inside the isolated environment. It fetches packages from Alpine Linux repositories.
+
+### Installing Packages
 
 ```bash
 cd ~/myproject
-
-# Packages install to .isobox/
-isobox pkg install curl
-isobox pkg install python3
-isobox pkg list
-
+isobox init
 isobox enter
-(isobox) # curl --version
+
+# Inside the environment:
+(isobox) # isobox install git
+(isobox) # isobox install python3
+(isobox) # isobox install nodejs
+(isobox) # isobox list
+
+# Use the installed packages:
+(isobox) # git --version
 (isobox) # python3 --version
 ```
 
-Packages are fetched from Alpine Linux and extracted to `.isobox/`.
+### How It Works
+
+1. Packages are downloaded from Alpine Linux v3.19 repositories
+2. Automatically installs required dependencies (pcre2, zlib, etc.)
+3. Extracts packages directly into the isolated filesystem
+4. All files stay within `.isobox/` - completely isolated from host
 
 ## Understanding Chroot
 
@@ -324,16 +356,22 @@ Make sure you have sudo access.
 Install packages or check binaries:
 ```bash
 isobox exec ls /bin
-isobox pkg install <package>
+
+# Or enter the environment and install:
+isobox enter
+(isobox) # isobox install <package>
 ```
 
-### Libraries missing
+### Library errors
 
-If you see library errors, the shared library copy may have failed. Try:
+If you see library errors like "symbol not found" or "cannot open shared object":
 ```bash
+# Destroy and rebuild to get latest dependencies
 isobox destroy
-isobox init  # Rebuild environment
+isobox init
 ```
+
+The init process automatically installs musl libc and common libraries.
 
 ### BusyBox not found
 
@@ -346,7 +384,7 @@ sudo apt-get install busybox-static
 
 - [Architecture](docs/ARCHITECTURE.md) - How IsoBox works internally
 - [Quick Start](docs/QUICKSTART.md) - Detailed getting started
-- [Package Manager](docs/PACKAGE_MANAGER.md) - IPKG documentation
+- [Package Manager](docs/PACKAGE_MANAGER.md) - Internal package manager documentation
 
 ## Why IsoBox?
 
