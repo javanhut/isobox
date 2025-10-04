@@ -15,6 +15,7 @@ type Environment struct {
 	Root      string    `json:"root"`
 	Created   time.Time `json:"created"`
 	IsoboxDir string    `json:"isobox_dir"`
+	Username  string    `json:"username"`
 }
 
 func Initialize(path string) (*Environment, error) {
@@ -28,11 +29,13 @@ func Initialize(path string) (*Environment, error) {
 	}
 
 	isoboxDir := filepath.Join(absPath, ".isobox")
+	username := filepath.Base(absPath)
 
 	env := &Environment{
 		Root:      absPath,
 		Created:   time.Now(),
 		IsoboxDir: isoboxDir,
+		Username:  username,
 	}
 
 	fmt.Println("Creating isolated Linux filesystem...")
@@ -54,6 +57,10 @@ func Initialize(path string) (*Environment, error) {
 	}
 
 	if err := env.createEssentialFiles(); err != nil {
+		return nil, err
+	}
+
+	if err := env.copyProjectFiles(); err != nil {
 		return nil, err
 	}
 
@@ -109,6 +116,37 @@ func (e *Environment) createIsolatedFilesystem() error {
 		return fmt.Errorf("chmod tmp: %w", err)
 	}
 
+	if err := e.createDeviceNodes(); err != nil {
+		return fmt.Errorf("create device nodes: %w", err)
+	}
+
+	return nil
+}
+
+func (e *Environment) createDeviceNodes() error {
+	devDir := filepath.Join(e.IsoboxDir, "dev")
+
+	devices := []struct {
+		name  string
+		major int
+		minor int
+	}{
+		{"null", 1, 3},
+		{"zero", 1, 5},
+		{"random", 1, 8},
+		{"urandom", 1, 9},
+		{"tty", 5, 0},
+	}
+
+	for _, dev := range devices {
+		devPath := filepath.Join(devDir, dev.name)
+		cmd := exec.Command("sudo", "mknod", "-m", "666", devPath, "c", fmt.Sprintf("%d", dev.major), fmt.Sprintf("%d", dev.minor))
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("mknod %s: %w", dev.name, err)
+		}
+	}
+
+	fmt.Println("  Created device nodes: /dev/null, /dev/zero, /dev/random, /dev/urandom, /dev/tty")
 	return nil
 }
 
@@ -163,11 +201,24 @@ func (e *Environment) setupWithBusybox(busyboxPath string) error {
 }
 
 func (e *Environment) installAlpineBaseDeps() error {
-	deps := []string{"zlib", "pcre2", "libssl3", "libcrypto3", "ca-certificates-bundle", "libidn2", "libunistring"}
+	deps := []string{
+		"zlib",
+		"pcre2",
+		"libssl3",
+		"libcrypto3",
+		"ca-certificates-bundle",
+		"libidn2",
+		"libunistring",
+		"libcurl",
+		"nghttp2-libs",
+		"brotli-libs",
+		"c-ares",
+		"libpsl",
+	}
 
 	for _, dep := range deps {
 		if err := e.installAlpinePackage(dep); err != nil {
-			fmt.Printf("  Warning: failed to install %s\n", dep)
+			fmt.Printf("  Warning: failed to install %s: %v\n", dep, err)
 			continue
 		}
 	}
@@ -196,45 +247,60 @@ func (e *Environment) addSSLCapableTools() error {
 }
 
 func (e *Environment) installAlpinePackage(pkgName string) error {
-	baseURL := "https://dl-cdn.alpinelinux.org/alpine/v3.19/main/x86_64/"
-
-	cmd := exec.Command("wget", "-qO-", baseURL)
-	output, err := cmd.Output()
-	if err != nil {
-		return err
+	repos := []string{
+		"https://dl-cdn.alpinelinux.org/alpine/v3.19/main/x86_64/",
+		"https://dl-cdn.alpinelinux.org/alpine/v3.19/community/x86_64/",
 	}
 
-	lines := strings.Split(string(output), "\n")
+	var pkgURL string
 	var pkgFile string
 
-	for _, line := range lines {
-		if strings.Contains(line, fmt.Sprintf(`href="%s-`, pkgName)) {
-			start := strings.Index(line, `href="`) + 6
-			end := strings.Index(line[start:], `"`)
-			if end > 0 {
-				pkgFile = line[start : start+end]
-				if strings.HasPrefix(pkgFile, pkgName+"-") && strings.Contains(pkgFile[len(pkgName)+1:], ".apk") {
-					break
+	for _, baseURL := range repos {
+		cmd := exec.Command("wget", "-qO-", baseURL)
+		output, err := cmd.Output()
+		if err != nil {
+			continue
+		}
+
+		lines := strings.Split(string(output), "\n")
+
+		for _, line := range lines {
+			if strings.Contains(line, fmt.Sprintf(`href="%s-`, pkgName)) {
+				start := strings.Index(line, `href="`) + 6
+				end := strings.Index(line[start:], `"`)
+				if end > 0 {
+					pkgFile = line[start : start+end]
+					if strings.HasPrefix(pkgFile, pkgName+"-") && strings.HasSuffix(pkgFile, ".apk") {
+						pkgURL = baseURL + pkgFile
+						break
+					}
 				}
 			}
 		}
+
+		if pkgURL != "" {
+			break
+		}
 	}
 
-	if pkgFile == "" {
-		return fmt.Errorf("package not found")
+	if pkgURL == "" {
+		return fmt.Errorf("package %s not found in repositories", pkgName)
 	}
 
-	pkgURL := baseURL + pkgFile
 	tmpFile := fmt.Sprintf("/tmp/%s.apk", pkgName)
 
-	cmd = exec.Command("wget", "-q", "-O", tmpFile, pkgURL)
+	cmd := exec.Command("wget", "-q", "-O", tmpFile, pkgURL)
 	if err := cmd.Run(); err != nil {
-		return err
+		return fmt.Errorf("download failed: %w", err)
 	}
 	defer os.Remove(tmpFile)
 
 	cmd = exec.Command("tar", "-xzf", tmpFile, "-C", e.IsoboxDir)
-	return cmd.Run()
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("extract failed: %w (output: %s)", err, string(output))
+	}
+
+	return nil
 }
 
 func (e *Environment) setupSSLCertificates() error {
@@ -276,18 +342,8 @@ func (e *Environment) setupSSLCertificates() error {
 }
 
 func (e *Environment) installMuslLibc() error {
-	muslURL := "https://dl-cdn.alpinelinux.org/alpine/v3.19/main/x86_64/musl-1.2.4_git20230717-r5.apk"
-	muslFile := "/tmp/musl-isobox.apk"
-
-	cmd := exec.Command("wget", "-q", "-O", muslFile, muslURL)
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("download musl: %w", err)
-	}
-	defer os.Remove(muslFile)
-
-	cmd = exec.Command("tar", "-xzf", muslFile, "-C", e.IsoboxDir)
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("extract musl: %w", err)
+	if err := e.installAlpinePackage("musl"); err != nil {
+		return fmt.Errorf("install musl: %w", err)
 	}
 
 	fmt.Println("  Added musl libc (for Alpine packages)")
@@ -521,33 +577,37 @@ func (e *Environment) createEssentialFiles() error {
 	fmt.Println("\nCreating essential configuration files...")
 
 	etcPasswd := filepath.Join(e.IsoboxDir, "etc/passwd")
-	passwdContent := `root:x:0:0:root:/root:/bin/sh
+	passwdContent := fmt.Sprintf(`root:x:0:0:root:/root:/bin/sh
+%s:x:1000:1000:%s:/home/%s:/bin/sh
 nobody:x:65534:65534:nobody:/:/bin/false
-`
+`, e.Username, e.Username, e.Username)
 	if err := os.WriteFile(etcPasswd, []byte(passwdContent), 0644); err != nil {
 		return fmt.Errorf("create passwd: %w", err)
 	}
 
 	etcShadow := filepath.Join(e.IsoboxDir, "etc/shadow")
-	shadowContent := `root:!:19000:0:99999:7:::
+	shadowContent := fmt.Sprintf(`root:!:19000:0:99999:7:::
+%s:!:19000:0:99999:7:::
 nobody:!:19000:0:99999:7:::
-`
+`, e.Username)
 	if err := os.WriteFile(etcShadow, []byte(shadowContent), 0600); err != nil {
 		return fmt.Errorf("create shadow: %w", err)
 	}
 
 	etcGroup := filepath.Join(e.IsoboxDir, "etc/group")
-	groupContent := `root:x:0:
+	groupContent := fmt.Sprintf(`root:x:0:
+%s:x:1000:
 nogroup:x:65534:
-`
+`, e.Username)
 	if err := os.WriteFile(etcGroup, []byte(groupContent), 0644); err != nil {
 		return fmt.Errorf("create group: %w", err)
 	}
 
 	etcGshadow := filepath.Join(e.IsoboxDir, "etc/gshadow")
-	gshadowContent := `root:!::
+	gshadowContent := fmt.Sprintf(`root:!::
+%s:!::
 nogroup:!::
-`
+`, e.Username)
 	if err := os.WriteFile(etcGshadow, []byte(gshadowContent), 0600); err != nil {
 		return fmt.Errorf("create gshadow: %w", err)
 	}
@@ -571,7 +631,6 @@ nameserver 8.8.4.4
 	bashrc := filepath.Join(e.IsoboxDir, "etc/bash.bashrc")
 	bashrcContent := `export PS1="(isobox) \u@\h:\w\$ "
 export PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
-export HOME=/root
 
 echo "========================================="
 echo "   ISOBOX Isolated Environment"
@@ -599,7 +658,6 @@ alias l='ls -CF'
 
 	profile := filepath.Join(e.IsoboxDir, "etc/profile")
 	profileContent := `export PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
-export HOME=/root
 export PS1="(isobox) \u@\h:\w\$ "
 
 if [ -f /etc/bash.bashrc ]; then
@@ -655,6 +713,56 @@ func (e *Environment) save() error {
 	return os.WriteFile(configPath, data, 0644)
 }
 
+func (e *Environment) copyProjectFiles() error {
+	fmt.Println("\nCopying project files to isolated environment...")
+
+	userHome := filepath.Join(e.IsoboxDir, "home", e.Username)
+	if err := os.MkdirAll(userHome, 0755); err != nil {
+		return fmt.Errorf("create user home: %w", err)
+	}
+
+	tarFile := filepath.Join(e.IsoboxDir, "tmp", "project.tar.gz")
+	if err := os.MkdirAll(filepath.Dir(tarFile), 0755); err != nil {
+		return fmt.Errorf("create tmp dir: %w", err)
+	}
+
+	fmt.Printf("  Creating archive of project files...\n")
+
+	tarCmd := exec.Command("tar",
+		"-czf", tarFile,
+		"--exclude=.isobox",
+		"--exclude=.git",
+		"-C", e.Root,
+		".")
+
+	if output, err := tarCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("tar failed: %w\nOutput: %s", err, string(output))
+	}
+
+	fmt.Printf("  Extracting to /home/%s...\n", e.Username)
+
+	untarCmd := exec.Command("tar",
+		"-xzf", tarFile,
+		"-C", userHome)
+
+	if output, err := untarCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("untar failed: %w\nOutput: %s", err, string(output))
+	}
+
+	if err := os.Remove(tarFile); err != nil {
+		fmt.Printf("  Warning: failed to remove temp tar file: %v\n", err)
+	}
+
+	chownCmd := exec.Command("sudo", "chown", "-R", "1000:1000", userHome)
+	if err := chownCmd.Run(); err != nil {
+		fmt.Printf("  Warning: failed to set ownership: %v\n", err)
+	}
+
+	fmt.Printf("  Project files copied to /home/%s\n", e.Username)
+
+	return nil
+}
+
 func (e *Environment) EnterShell() error {
 	shell := "/bin/bash"
 	isoboxShell := filepath.Join(e.IsoboxDir, "bin/bash")
@@ -664,16 +772,23 @@ func (e *Environment) EnterShell() error {
 		shell = "/bin/sh"
 	}
 
-	fmt.Printf("Entering isolated environment via chroot...\n")
-	fmt.Printf("Root filesystem: %s\n\n", e.IsoboxDir)
+	fmt.Printf("Entering isolated environment as user '%s'...\n", e.Username)
+	fmt.Printf("Root filesystem: %s\n", e.IsoboxDir)
+	fmt.Printf("Working directory: /home/%s\n\n", e.Username)
 
-	cmd := exec.Command("sudo", "chroot", e.IsoboxDir, shell, "-l")
+	homeDir := fmt.Sprintf("/home/%s", e.Username)
+
+	initCmd := fmt.Sprintf("cd %s && exec %s -l", homeDir, shell)
+
+	cmd := exec.Command("sudo", "chroot", "--userspec=1000:1000", e.IsoboxDir, shell, "-c", initCmd)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Env = []string{
 		"PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
-		"HOME=/root",
+		"HOME=" + homeDir,
+		"USER=" + e.Username,
+		"LOGNAME=" + e.Username,
 		"TERM=" + os.Getenv("TERM"),
 	}
 
@@ -681,10 +796,13 @@ func (e *Environment) EnterShell() error {
 }
 
 func (e *Environment) Execute(command []string) error {
-	fmt.Printf("Executing in isolated environment: %v\n", command)
+	fmt.Printf("Executing in isolated environment as user '%s': %v\n", e.Username, command)
 
-	args := []string{"chroot", e.IsoboxDir}
-	args = append(args, command...)
+	homeDir := fmt.Sprintf("/home/%s", e.Username)
+	cmdStr := strings.Join(command, " ")
+	execCmd := fmt.Sprintf("cd %s && %s", homeDir, cmdStr)
+
+	args := []string{"chroot", "--userspec=1000:1000", e.IsoboxDir, "/bin/sh", "-c", execCmd}
 
 	cmd := exec.Command("sudo", args...)
 	cmd.Stdin = os.Stdin
@@ -692,7 +810,9 @@ func (e *Environment) Execute(command []string) error {
 	cmd.Stderr = os.Stderr
 	cmd.Env = []string{
 		"PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
-		"HOME=/root",
+		"HOME=" + homeDir,
+		"USER=" + e.Username,
+		"LOGNAME=" + e.Username,
 		"TERM=" + os.Getenv("TERM"),
 	}
 

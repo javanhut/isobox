@@ -211,7 +211,7 @@ install_common_dependencies() {
 
     echo "Installing Alpine library dependencies..."
 
-    deps="pcre2 zlib"
+    deps="pcre2 zlib c-ares libpsl nghttp2-libs brotli-libs"
     for dep in $deps; do
         if command -v wget >/dev/null 2>&1; then
             index_page=$(wget -qO- "https://dl-cdn.alpinelinux.org/alpine/v3.19/main/x86_64/" 2>&1)
