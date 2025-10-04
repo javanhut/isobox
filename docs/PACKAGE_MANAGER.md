@@ -118,10 +118,22 @@ During initialization (`isobox init`), the following are automatically installed
 - zlib (compression library)
 - pcre2 (regex library)
 - libidn2 and libunistring (internationalization)
+- ncurses libraries (libncursesw, libformw, libmenuw, libpanelw)
+- readline (command-line editing)
+- libacl and libattr (ACL support)
+- oniguruma (regex engine)
+- libcap (capability support)
+- s6 and skalibs (process supervision)
+- utmps-libs (utmp/wtmp handling)
 
 **Tools:**
 - BusyBox (150+ Unix commands)
 - Alpine wget (SSL-capable for package downloads)
+- bash and zsh shells
+- python3 (Python 3 interpreter)
+- gcc (C compiler)
+- go (Go programming language)
+- vim (text editor)
 
 When you install your first package, the package manager also installs common dependencies (pcre2, zlib) if not already marked as installed.
 
@@ -189,19 +201,23 @@ Installing packages in `project-a` doesn't affect `project-b`.
 
 ### Text Editors
 
+Note: vim is pre-installed in all environments.
+
 ```bash
-(isobox) # isobox install vim
+(isobox) # vim --version        # Already available
 (isobox) # isobox install nano
 (isobox) # isobox install emacs
 ```
 
 ### Programming Languages
 
+Note: python3 and go are pre-installed in all environments.
+
 ```bash
-(isobox) # isobox install python3
+(isobox) # python3 --version   # Already available
+(isobox) # go version           # Already available
 (isobox) # isobox install nodejs
 (isobox) # isobox install ruby
-(isobox) # isobox install go
 ```
 
 ### Text Processing
@@ -215,8 +231,10 @@ Installing packages in `project-a` doesn't affect `project-b`.
 
 ### Build Tools
 
+Note: gcc is pre-installed in all environments.
+
 ```bash
-(isobox) # isobox install gcc
+(isobox) # gcc --version        # Already available
 (isobox) # isobox install g++
 (isobox) # isobox install make
 (isobox) # isobox install cmake
@@ -234,15 +252,18 @@ cd ~/myproject
 isobox init
 isobox enter
 
-# Inside environment
+# Inside environment - vim, gcc, python3, go are pre-installed
+(isobox) # vim --version
+(isobox) # gcc --version
+(isobox) # python3 --version
+(isobox) # go version
+
+# Install additional tools
 (isobox) # isobox install git
-(isobox) # isobox install vim
 (isobox) # isobox install make
-(isobox) # isobox install gcc
 
 # Use the tools
 (isobox) # git --version
-(isobox) # vim --version
 (isobox) # exit
 ```
 
@@ -255,8 +276,8 @@ cd ~/build-env
 isobox init
 isobox enter
 
-# Inside environment
-(isobox) # isobox install gcc
+# Inside environment - gcc is pre-installed
+(isobox) # gcc --version
 (isobox) # isobox install make
 (isobox) # isobox install cmake
 (isobox) # isobox install git
@@ -272,11 +293,10 @@ cd ~/pyproject
 isobox init
 isobox enter
 
-# Inside environment
-(isobox) # isobox install python3
+# Inside environment - python3 and gcc are pre-installed
+(isobox) # python3 --version
 (isobox) # isobox install py3-pip
 (isobox) # isobox install python3-dev
-(isobox) # python3 --version
 (isobox) # pip --version
 (isobox) # exit
 ```
@@ -787,15 +807,14 @@ cd ~/pyproject
 isobox init
 isobox enter
 
-# Inside environment
-(isobox) # isobox install python3
+# Inside environment - python3 and gcc are pre-installed
+(isobox) # python3 --version
+(isobox) # gcc --version
 (isobox) # isobox install py3-pip
 (isobox) # isobox install python3-dev
-(isobox) # isobox install gcc
 (isobox) # isobox install musl-dev
 
 # Use Python
-(isobox) # python3 --version
 (isobox) # pip install requests
 (isobox) # python3 -c "import requests; print(requests.__version__)"
 (isobox) # exit
@@ -858,8 +877,8 @@ cd ~/build
 isobox init
 isobox enter
 
-# Inside environment
-(isobox) # isobox install gcc
+# Inside environment - gcc is pre-installed
+(isobox) # gcc --version
 (isobox) # isobox install g++
 (isobox) # isobox install make
 (isobox) # isobox install cmake

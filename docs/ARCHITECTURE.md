@@ -156,6 +156,19 @@ sudo chroot /path/to/.isobox /bin/bash -l
 - Displays welcome message
 - Sets up aliases and PS1
 
+**Built-in Shell Aliases:**
+- `ll` - equivalent to `ls -lah` (detailed list with hidden files)
+- `la` - equivalent to `ls -A` (all files except . and ..)
+- `l` - equivalent to `ls -CF` (columnar format with indicators)
+
+**Pre-installed Development Tools:**
+- python3 - Python 3 interpreter
+- gcc - GNU C compiler
+- go - Go programming language
+- vim - Vi IMproved text editor
+- bash - Bourne Again Shell
+- zsh - Z Shell
+
 ### 5. Package Manager (IPKG)
 
 **Location:** `pkg/ipkg/manager.go`

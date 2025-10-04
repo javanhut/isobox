@@ -407,6 +407,30 @@ func (e *Environment) installAlpineBaseDeps() error {
 		"less",
 		"which",
 		"nano",
+		// Essential Libraries for utils
+		"ncurses-terminfo-base",
+		"libncursesw",
+		"libformw",
+		"libmenuw",
+		"libpanelw",
+		"readline",
+		"libacl",
+		"libattr",
+		"utmps-libs",
+		"s6",
+		"skalibs",
+		"oniguruma",
+		"oniguruma-dev",
+		"libcap",
+		"luv",
+		"libtermkey",
+		"libvterm",
+		"msgpack-c",
+		"tree-sitter",
+		"unibilium",
+		"musl-libintl",
+		"luajit",
+		"libuv",
 	}
 
 	installedCount := 0
@@ -764,19 +788,10 @@ func (e *Environment) setupShells() error {
 	// Install shell dependencies first - these are critical
 	// Note: ncurses-libs is a meta-package, we need the actual library packages
 	deps := []string{
-		"ncurses-terminfo-base",
-		"libncursesw", // This contains libncursesw.so.6
-		"libformw",
-		"libmenuw",
-		"libpanelw",
-		"readline",
-		"libacl",
-		"libattr",
-		"utmps-libs",
-		"s6",
-		"skalibs",
-		"oniguruma",
-		"oniguruma-dev",
+		"python3",
+		"gcc",
+		"go",
+		"vim",
 	}
 	fmt.Println("  Installing shell dependencies...")
 	for _, dep := range deps {

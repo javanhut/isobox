@@ -101,6 +101,16 @@ Found BusyBox at: /usr/bin/busybox
   Added Alpine base dependencies
   Installed BusyBox and 150+ Unix utilities
 
+Setting up shells (bash, zsh, sh)...
+  Installing shell dependencies...
+    Installed python3
+    Installed gcc
+    Installed go
+    Installed vim
+  Added bash shell
+  Added zsh shell
+  sh is provided by BusyBox
+
 IsoBox environment created successfully!
 Location: /home/user/my-first-isobox
 
@@ -157,6 +167,17 @@ pwd
 whoami
 cat /etc/os-release
 which ls
+python3 --version
+gcc --version
+go version
+vim --version
+```
+
+Built-in shell aliases are also available:
+```bash
+ll      # equivalent to 'ls -lah'
+la      # equivalent to 'ls -A'
+l       # equivalent to 'ls -CF'
 ```
 
 ### 6. Exit the Environment
@@ -317,6 +338,10 @@ cd ~/myapp
 isobox init
 isobox enter
 
+# gcc, vim, python3, go are pre-installed
+(isobox) # gcc --version
+(isobox) # vim --version
+
 (isobox) # isobox install git
 (isobox) # isobox install make
 (isobox) # git clone https://github.com/user/repo .
@@ -334,8 +359,10 @@ cd ~/test-env
 isobox init
 isobox enter
 
-(isobox) # isobox install python3
+# python3 is pre-installed
 (isobox) # python3 --version
+(isobox) # isobox install py3-pip
+(isobox) # pip --version
 
 (isobox) # exit
 ```
@@ -595,6 +622,8 @@ Now that you know the basics:
 - Packages come from Alpine Linux repository (small, secure, musl-based)
 - All package management happens inside the environment
 - Libraries are automatically resolved from Alpine repos
+- python3, gcc, go, and vim are pre-installed in all environments
+- Use built-in aliases: `ll` (ls -lah), `la` (ls -A), `l` (ls -CF)
 
 ## Example Projects
 
@@ -630,9 +659,12 @@ mkdir ~/pyproject
 cd ~/pyproject
 isobox init
 isobox enter
-(isobox) # isobox install python3
-(isobox) # isobox install py3-pip
+
+# python3 and gcc are pre-installed
 (isobox) # python3 --version
+(isobox) # gcc --version
+(isobox) # isobox install py3-pip
+(isobox) # pip --version
 ```
 
 Happy IsoBoxing!
