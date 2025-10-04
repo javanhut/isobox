@@ -18,6 +18,97 @@ type Environment struct {
 	Username  string    `json:"username"`
 }
 
+func getBaseCachePath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "/tmp/isobox-base-system.tar.gz"
+	}
+	cacheDir := filepath.Join(home, ".cache", "isobox")
+	os.MkdirAll(cacheDir, 0755)
+	return filepath.Join(cacheDir, "base-system.tar.gz")
+}
+
+func RebuildCache() error {
+	cachePath := getBaseCachePath()
+
+	if _, err := os.Stat(cachePath); err == nil {
+		fmt.Printf("Deleting old cache: %s\n", cachePath)
+		if err := os.Remove(cachePath); err != nil {
+			return fmt.Errorf("failed to delete cache: %w", err)
+		}
+	}
+
+	fmt.Println("Rebuilding base system cache...")
+	if err := buildBaseSystem(cachePath); err != nil {
+		return fmt.Errorf("rebuild failed: %w", err)
+	}
+
+	return nil
+}
+
+func buildBaseSystem(cachePath string) error {
+	tmpDir, err := os.MkdirTemp("", "isobox-base-*")
+	if err != nil {
+		return fmt.Errorf("create temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	fmt.Println("\nSetting up base system...")
+	fmt.Println("This will be cached for faster initialization in the future.")
+
+	tmpEnv := &Environment{
+		IsoboxDir: tmpDir,
+	}
+
+	dirs := []string{
+		"bin", "sbin",
+		"usr/bin", "usr/sbin", "usr/local/bin",
+		"lib", "lib64", "usr/lib", "usr/lib64",
+		"etc", "etc/profile.d",
+		"dev", "proc", "sys", "tmp",
+		"var/lib/ipkg", "var/log", "var/tmp", "var/cache/isobox",
+		"mnt", "opt", "srv", "run",
+	}
+
+	for _, dir := range dirs {
+		path := filepath.Join(tmpDir, dir)
+		if err := os.MkdirAll(path, 0755); err != nil {
+			return fmt.Errorf("create %s: %w", dir, err)
+		}
+	}
+
+	fmt.Println("\nSetting up POSIX binaries...")
+	busybox := findBusybox()
+	if busybox == "" {
+		return fmt.Errorf("BusyBox not found")
+	}
+	if err := tmpEnv.setupWithBusybox(busybox); err != nil {
+		return err
+	}
+
+	if err := tmpEnv.setupInternalPackageManager(); err != nil {
+		return err
+	}
+
+	fmt.Println("\nCreating base system tarball...")
+	cmd := exec.Command("tar", "-czf", cachePath, "-C", tmpDir, ".")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("create tarball: %w (output: %s)", err, string(output))
+	}
+
+	fmt.Printf("Base system cached at: %s\n", cachePath)
+	return nil
+}
+
+func extractBaseSystem(targetDir, cachePath string) error {
+	fmt.Println("Extracting base system...")
+	cmd := exec.Command("tar", "-xzf", cachePath, "-C", targetDir)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("extract tarball: %w (output: %s)", err, string(output))
+	}
+	return nil
+}
+
 func Initialize(path string) (*Environment, error) {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
@@ -38,29 +129,32 @@ func Initialize(path string) (*Environment, error) {
 		Username:  username,
 	}
 
+	baseCachePath := getBaseCachePath()
+
+	if _, err := os.Stat(baseCachePath); os.IsNotExist(err) {
+		fmt.Println("Building base system (first time only, this will be cached)...")
+		if err := buildBaseSystem(baseCachePath); err != nil {
+			return nil, fmt.Errorf("build base system: %w", err)
+		}
+	} else {
+		fmt.Println("Using cached base system...")
+	}
+
 	fmt.Println("Creating isolated Linux filesystem...")
+
+	if err := os.MkdirAll(env.IsoboxDir, 0755); err != nil {
+		return nil, fmt.Errorf("create isobox directory: %w", err)
+	}
+
+	if err := extractBaseSystem(env.IsoboxDir, baseCachePath); err != nil {
+		return nil, fmt.Errorf("extract base system: %w", err)
+	}
 
 	if err := env.createIsolatedFilesystem(); err != nil {
 		return nil, err
 	}
 
-	if err := env.setupBinaries(); err != nil {
-		return nil, err
-	}
-
-	if err := env.setupLibraries(); err != nil {
-		return nil, err
-	}
-
-	if err := env.setupInternalPackageManager(); err != nil {
-		return nil, err
-	}
-
 	if err := env.createEssentialFiles(); err != nil {
-		return nil, err
-	}
-
-	if err := env.copyProjectFiles(); err != nil {
 		return nil, err
 	}
 
@@ -92,15 +186,10 @@ func Load(path string) (*Environment, error) {
 }
 
 func (e *Environment) createIsolatedFilesystem() error {
+	// Create user-specific directories
 	dirs := []string{
-		"bin", "sbin",
-		"usr/bin", "usr/sbin", "usr/local/bin",
-		"lib", "lib64", "usr/lib", "usr/lib64",
-		"etc", "etc/profile.d",
-		"dev", "proc", "sys", "tmp",
-		"root", "home",
-		"var/lib/ipkg", "var/log", "var/tmp",
-		"mnt", "opt", "srv", "run",
+		"root",
+		"home",
 	}
 
 	for _, dir := range dirs {
@@ -110,6 +199,20 @@ func (e *Environment) createIsolatedFilesystem() error {
 		}
 		fmt.Printf("  Created: .isobox/%s\n", dir)
 	}
+
+	// Create user home directory
+	userHome := filepath.Join(e.IsoboxDir, "home", e.Username)
+	if err := os.MkdirAll(userHome, 0755); err != nil {
+		return fmt.Errorf("create user home: %w", err)
+	}
+
+	// Set ownership to user (UID 1000)
+	chownCmd := exec.Command("sudo", "chown", "1000:1000", userHome)
+	if err := chownCmd.Run(); err != nil {
+		fmt.Printf("  Warning: failed to set ownership: %v\n", err)
+	}
+
+	fmt.Printf("  Created: .isobox/home/%s\n", e.Username)
 
 	tmpPath := filepath.Join(e.IsoboxDir, "tmp")
 	if err := os.Chmod(tmpPath, 01777); err != nil {
@@ -541,22 +644,9 @@ func (e *Environment) setupLdConfig() error {
 func (e *Environment) setupInternalPackageManager() error {
 	fmt.Println("\nSetting up internal package manager...")
 
-	exePath, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("get executable path: %w", err)
-	}
-
-	exeDir := filepath.Dir(exePath)
-	scriptPath := filepath.Join(exeDir, "scripts/isobox-internal.sh")
-
-	if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
-		workingDir, _ := os.Getwd()
-		scriptPath = filepath.Join(workingDir, "scripts/isobox-internal.sh")
-	}
-
-	if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
-		fmt.Println("  Warning: Internal package manager script not found")
-		return nil
+	scriptPath := findInternalScript()
+	if scriptPath == "" {
+		return fmt.Errorf("internal package manager script not found (isobox-internal.sh)")
 	}
 
 	destPath := filepath.Join(e.IsoboxDir, "bin/isobox")
@@ -571,6 +661,49 @@ func (e *Environment) setupInternalPackageManager() error {
 
 	fmt.Println("  Installed: /bin/isobox (internal package manager)")
 	return nil
+}
+
+func findInternalScript() string {
+	searchPaths := []string{}
+
+	if exePath, err := os.Executable(); err == nil {
+		exeDir := filepath.Dir(exePath)
+		searchPaths = append(searchPaths, filepath.Join(exeDir, "scripts/isobox-internal.sh"))
+	}
+
+	if workingDir, err := os.Getwd(); err == nil {
+		searchPaths = append(searchPaths, filepath.Join(workingDir, "scripts/isobox-internal.sh"))
+
+		gitRoot := findGitRoot(workingDir)
+		if gitRoot != "" {
+			searchPaths = append(searchPaths, filepath.Join(gitRoot, "scripts/isobox-internal.sh"))
+		}
+	}
+
+	for _, path := range searchPaths {
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+	}
+
+	return ""
+}
+
+func findGitRoot(startDir string) string {
+	dir := startDir
+	for {
+		gitDir := filepath.Join(dir, ".git")
+		if _, err := os.Stat(gitDir); err == nil {
+			return dir
+		}
+
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return ""
 }
 
 func (e *Environment) createEssentialFiles() error {
@@ -852,6 +985,39 @@ func (e *Environment) PrintStatus() {
 	fmt.Printf("The host system is NOT accessible from within.\n")
 	fmt.Printf("\nTo enter:\n")
 	fmt.Printf("  cd %s && isobox enter\n", e.Root)
+}
+
+func (e *Environment) Migrate(sourceDir, destPath string) error {
+	absSource, err := filepath.Abs(sourceDir)
+	if err != nil {
+		return fmt.Errorf("resolve source path: %w", err)
+	}
+
+	if _, err := os.Stat(absSource); os.IsNotExist(err) {
+		return fmt.Errorf("source directory does not exist: %s", absSource)
+	}
+
+	destInIsobox := filepath.Join(e.IsoboxDir, destPath)
+
+	fmt.Printf("Copying %s to %s in isobox...\n", absSource, destPath)
+
+	destDir := filepath.Dir(destInIsobox)
+	if err := os.MkdirAll(destDir, 0755); err != nil {
+		return fmt.Errorf("create destination directory: %w", err)
+	}
+
+	cmd := exec.Command("cp", "-r", absSource, destInIsobox)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("copy failed: %w (output: %s)", err, string(output))
+	}
+
+	chownCmd := exec.Command("sudo", "chown", "-R", "1000:1000", destInIsobox)
+	if err := chownCmd.Run(); err != nil {
+		fmt.Printf("  Warning: failed to set ownership to user: %v\n", err)
+	}
+
+	fmt.Printf("  Successfully copied to %s\n", destPath)
+	return nil
 }
 
 func (e *Environment) Destroy() error {

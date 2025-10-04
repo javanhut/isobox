@@ -25,6 +25,10 @@ func main() {
 		handleEnter()
 	case "exec":
 		handleExec()
+	case "migrate":
+		handleMigrate()
+	case "recache":
+		handleRecache()
 	case "pkg":
 		handlePackage()
 	case "status":
@@ -41,16 +45,18 @@ func main() {
 func printUsage() {
 	fmt.Println("IsoBox - Isolated Linux Development Environment")
 	fmt.Println("\nUsage:")
-	fmt.Println("  isobox init [path]       Initialize isolated environment in directory (default: current)")
-	fmt.Println("  isobox enter             Enter the isolated environment shell")
-	fmt.Println("  isobox exec <cmd>        Execute command in isolated environment")
-	fmt.Println("  isobox status            Show environment status")
-	fmt.Println("  isobox destroy           Remove isolated environment")
+	fmt.Println("  isobox init [path]            Initialize isolated environment in directory (default: current)")
+	fmt.Println("  isobox enter                  Enter the isolated environment shell")
+	fmt.Println("  isobox exec <cmd>             Execute command in isolated environment")
+	fmt.Println("  isobox migrate <src> <dest>   Copy directory from host to isobox")
+	fmt.Println("  isobox recache                Delete and rebuild the base system cache")
+	fmt.Println("  isobox status                 Show environment status")
+	fmt.Println("  isobox destroy                Remove isolated environment")
 	fmt.Println("\nPackage Management:")
-	fmt.Println("  isobox pkg install <pkg>  Install a package")
-	fmt.Println("  isobox pkg remove <pkg>   Remove a package")
-	fmt.Println("  isobox pkg list           List installed packages")
-	fmt.Println("  isobox pkg update         Update package index")
+	fmt.Println("  isobox pkg install <pkg>      Install a package")
+	fmt.Println("  isobox pkg remove <pkg>       Remove a package")
+	fmt.Println("  isobox pkg list               List installed packages")
+	fmt.Println("  isobox pkg update             Update package index")
 }
 
 func handleInit() {
@@ -110,6 +116,38 @@ func handleStatus() {
 	}
 
 	env.PrintStatus()
+}
+
+func handleMigrate() {
+	if len(os.Args) < 4 {
+		fmt.Println("Usage: isobox migrate <source-dir> <dest-path>")
+		fmt.Println("\nExample:")
+		fmt.Println("  isobox migrate ./myproject /home/username/myproject")
+		fmt.Println("\nCopies a directory from the host system into the isobox environment.")
+		os.Exit(1)
+	}
+
+	env, err := environment.Load(".")
+	if err != nil {
+		log.Fatalf("Failed to load environment: %v\n\nRun 'isobox init' first.", err)
+	}
+
+	sourceDir := os.Args[2]
+	destPath := os.Args[3]
+
+	if err := env.Migrate(sourceDir, destPath); err != nil {
+		log.Fatalf("Failed to migrate directory: %v", err)
+	}
+
+	fmt.Printf("Successfully copied %s to %s in isobox\n", sourceDir, destPath)
+}
+
+func handleRecache() {
+	if err := environment.RebuildCache(); err != nil {
+		log.Fatalf("Failed to rebuild cache: %v", err)
+	}
+	fmt.Println("\nBase system cache rebuilt successfully!")
+	fmt.Println("Next 'isobox init' will use the new cache.")
 }
 
 func handleDestroy() {
