@@ -52,11 +52,16 @@ func printUsage() {
 	fmt.Println("  isobox recache                Delete and rebuild the base system cache")
 	fmt.Println("  isobox status                 Show environment status")
 	fmt.Println("  isobox destroy                Remove isolated environment")
-	fmt.Println("\nPackage Management:")
-	fmt.Println("  isobox pkg install <pkg>      Install a package")
-	fmt.Println("  isobox pkg remove <pkg>       Remove a package")
+	fmt.Println("\nPackage Management (from host):")
+	fmt.Println("  isobox pkg install <pkg>      Install a package in the environment")
+	fmt.Println("  isobox pkg remove <pkg>       Remove a package from the environment")
 	fmt.Println("  isobox pkg list               List installed packages")
 	fmt.Println("  isobox pkg update             Update package index")
+	fmt.Println("\nPackage Management (inside environment after 'isobox enter'):")
+	fmt.Println("  isobox install <pkg>          Install a package")
+	fmt.Println("  isobox remove <pkg>           Remove a package")
+	fmt.Println("  isobox list                   List installed packages")
+	fmt.Println("  isobox update                 Update package index")
 }
 
 func handleInit() {

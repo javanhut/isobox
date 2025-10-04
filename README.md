@@ -104,11 +104,13 @@ bin  boot  dev  etc  home  lib  lib64  mnt  opt  proc  root  run  sbin  srv  sys
 ### Host Commands
 
 ```bash
-isobox init [path]        # Initialize isolated environment
-isobox enter              # Enter isolated environment (uses sudo chroot)
-isobox exec <cmd>         # Execute command in isolation (uses sudo chroot)
-isobox status             # Show environment status
-isobox destroy            # Remove isolated environment (uses sudo)
+isobox init [path]            # Initialize isolated environment
+isobox enter                  # Enter isolated environment (uses sudo chroot)
+isobox exec <cmd>             # Execute command in isolation (uses sudo chroot)
+isobox migrate <src> <dest>   # Copy directory from host to isobox
+isobox recache                # Delete and rebuild the base system cache
+isobox status                 # Show environment status
+isobox destroy                # Remove isolated environment (uses sudo)
 ```
 
 ### Inside Environment Commands
@@ -254,6 +256,34 @@ isobox exec pwd
 isobox exec cat /etc/os-release
 ```
 
+### Example 4: Migrating Projects
+
+```bash
+cd ~/dev-env
+isobox init
+
+# Copy a project from host into the isobox
+isobox migrate ./myproject /home/username/myproject
+
+# Enter and use the migrated files
+isobox enter
+(isobox) # cd /home/username/myproject
+(isobox) # ls -la
+(isobox) # exit
+```
+
+### Example 5: Rebuilding Cache
+
+```bash
+# If the package manager stops working after cache changes
+isobox recache
+
+# Then reinitialize your environments
+cd ~/myproject
+isobox destroy
+isobox init
+```
+
 ## Package Management
 
 IsoBox uses an internal package manager that runs inside the isolated environment. It fetches packages from Alpine Linux repositories.
@@ -372,6 +402,21 @@ isobox init
 ```
 
 The init process automatically installs musl libc and common libraries.
+
+### Package manager not working
+
+If the internal package manager (`isobox install`) doesn't work inside the environment:
+```bash
+# Rebuild the base system cache
+isobox recache
+
+# Then destroy and reinitialize your environment
+cd ~/myproject
+isobox destroy
+isobox init
+```
+
+This ensures the `isobox` script is properly installed in `/bin/isobox` inside the environment.
 
 ### BusyBox not found
 

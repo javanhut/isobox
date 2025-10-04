@@ -527,6 +527,40 @@ Common library packages:
 - `ncurses-libs` - Terminal UI
 - `readline` - Command-line editing
 
+### Package Manager Not Found
+
+**Error:** `/bin/sh: isobox: not found` when running package commands inside the environment
+
+**Cause:** The package manager script (`/bin/isobox`) is missing from the isolated environment. This can happen if:
+- The cache was created before the script was properly included
+- The environment was created with an older version of IsoBox
+- The base system cache is corrupted
+
+**Solution:**
+
+```bash
+# Exit the environment if you're inside it
+exit
+
+# Rebuild the base system cache from the host
+isobox recache
+
+# Destroy and reinitialize your environment
+cd ~/myproject
+isobox destroy
+isobox init
+
+# Enter and verify the package manager works
+isobox enter
+(isobox) # isobox help
+(isobox) # isobox install git
+```
+
+The `recache` command:
+- Deletes the old base system cache at `~/.cache/isobox/base-system.tar.gz`
+- Rebuilds it from scratch with the latest package manager script
+- Ensures all future `isobox init` commands use the updated cache
+
 ## Technical Details
 
 ### Package Manager Script Location

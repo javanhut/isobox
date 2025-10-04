@@ -384,6 +384,54 @@ my-first-isobox/
 └── [your files]
 ```
 
+## Advanced Features
+
+### Migrating Directories Into IsoBox
+
+You can copy directories from your host system into the isolated environment:
+
+```bash
+cd ~/my-first-isobox
+
+# Copy a project directory into the isobox
+isobox migrate ./mycode /home/username/mycode
+
+# Enter and access the migrated files
+isobox enter
+(isobox) # cd /home/username/mycode
+(isobox) # ls -la
+(isobox) # exit
+```
+
+The `migrate` command:
+- Copies files from host to the isolated filesystem
+- Sets proper ownership (UID 1000)
+- Makes files accessible inside the environment
+- Does NOT affect the host files
+
+### Rebuilding the Base System Cache
+
+IsoBox caches the base system at `~/.cache/isobox/base-system.tar.gz` for faster initialization. If the cache becomes corrupted or you need to rebuild it:
+
+```bash
+# Rebuild the cache
+isobox recache
+```
+
+This will:
+- Delete the old cache
+- Build a new base system from scratch
+- Include the latest internal package manager script
+- Cache it for future `isobox init` calls
+
+After rebuilding the cache, you may want to destroy and reinitialize existing environments:
+
+```bash
+cd ~/my-first-isobox
+isobox destroy
+isobox init
+```
+
 ## Cleaning Up
 
 ### Remove a Single Environment
@@ -465,6 +513,29 @@ ping dl-cdn.alpinelinux.org
 ```
 
 Make sure port 443 (HTTPS) is not blocked.
+
+### "isobox: not found" inside environment
+
+If you get `/bin/sh: isobox: not found` when trying to install packages inside the environment:
+
+```bash
+# Exit the environment first
+exit
+
+# Rebuild the base system cache
+isobox recache
+
+# Destroy and reinitialize your environment
+cd ~/my-first-isobox
+isobox destroy
+isobox init
+
+# Enter and try again
+isobox enter
+(isobox) # isobox install git
+```
+
+This ensures the internal package manager script is properly installed.
 
 ## Next Steps
 
