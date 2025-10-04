@@ -23,9 +23,12 @@ Get started with IsoBox in 5 minutes.
 ```bash
 git clone https://github.com/javanhut/isobox
 cd isobox
-go build -o isobox
-sudo mv isobox /usr/local/bin/
+make install
 ```
+
+This installs:
+- Binary to `/usr/local/bin/isobox`
+- Scripts to `/usr/local/share/isobox/scripts/`
 
 ### Verify Installation
 
@@ -68,6 +71,16 @@ cd ~/my-first-isobox
 ```bash
 isobox init
 ```
+
+By default, IsoBox uses `bash` as the shell. You can specify a different shell using the `--shell` flag:
+
+```bash
+isobox init --shell zsh    # Use zsh as default shell
+isobox init --shell bash   # Use bash as default shell (default)
+isobox init --shell sh     # Use sh as default shell
+```
+
+Available shells: `bash` (default), `zsh`, `sh`
 
 You'll see output like:
 
@@ -385,6 +398,32 @@ my-first-isobox/
 ```
 
 ## Advanced Features
+
+### Choosing Your Shell
+
+IsoBox supports multiple shells that are cached during initial installation for fast access:
+
+```bash
+# Initialize with bash (default)
+isobox init --shell bash
+
+# Initialize with zsh
+isobox init --shell zsh
+
+# Initialize with sh (BusyBox)
+isobox init --shell sh
+```
+
+The selected shell becomes the default login shell when you enter the environment. All shells (bash, zsh, sh) are available in the environment regardless of which one you choose as default.
+
+To use a different shell after initialization, you can manually run it inside the environment:
+
+```bash
+isobox enter
+(isobox) # zsh        # Switch to zsh
+(isobox) # bash       # Switch to bash
+(isobox) # sh         # Switch to sh
+```
 
 ### Migrating Directories Into IsoBox
 

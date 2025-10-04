@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"strings"
 
 	"github.com/javanhut/isobox/internal/environment"
 	"github.com/javanhut/isobox/pkg/ipkg"
@@ -19,21 +20,21 @@ func main() {
 	command := os.Args[1]
 
 	switch command {
-	case "init":
+	case "init", "install", "start":
 		handleInit()
-	case "enter":
+	case "enter", "open":
 		handleEnter()
 	case "exec":
 		handleExec()
 	case "migrate":
 		handleMigrate()
-	case "recache":
+	case "recache", "update":
 		handleRecache()
 	case "pkg":
 		handlePackage()
 	case "status":
 		handleStatus()
-	case "destroy":
+	case "destroy", "delete", "uninstall":
 		handleDestroy()
 	default:
 		fmt.Printf("Unknown command: %s\n", command)
@@ -45,7 +46,9 @@ func main() {
 func printUsage() {
 	fmt.Println("IsoBox - Isolated Linux Development Environment")
 	fmt.Println("\nUsage:")
-	fmt.Println("  isobox init [path]            Initialize isolated environment in directory (default: current)")
+	fmt.Println("  isobox init [path] [--shell <shell>]")
+	fmt.Println("                                Initialize isolated environment in directory (default: current)")
+	fmt.Println("                                Available shells: bash (default), zsh, sh")
 	fmt.Println("  isobox enter                  Enter the isolated environment shell")
 	fmt.Println("  isobox exec <cmd>             Execute command in isolated environment")
 	fmt.Println("  isobox migrate <src> <dest>   Copy directory from host to isobox")
@@ -66,18 +69,36 @@ func printUsage() {
 
 func handleInit() {
 	path := "."
-	if len(os.Args) > 2 {
-		path = os.Args[2]
+	shell := "bash"
+
+	for i := 2; i < len(os.Args); i++ {
+		arg := os.Args[i]
+		if arg == "--shell" {
+			if i+1 >= len(os.Args) {
+				fmt.Println("Error: --shell requires a value (bash, zsh, or sh)")
+				os.Exit(1)
+			}
+			shell = os.Args[i+1]
+			if shell != "bash" && shell != "zsh" && shell != "sh" {
+				fmt.Printf("Error: Invalid shell '%s'. Must be one of: bash, zsh, sh\n", shell)
+				os.Exit(1)
+			}
+			i++
+		} else if !strings.HasPrefix(arg, "--") {
+			path = arg
+		}
 	}
 
 	fmt.Printf("Initializing IsoBox environment in: %s\n", path)
-	env, err := environment.Initialize(path)
+	fmt.Printf("Default shell: %s\n", shell)
+	env, err := environment.Initialize(path, shell)
 	if err != nil {
 		log.Fatalf("Failed to initialize: %v", err)
 	}
 
 	fmt.Printf("\nIsoBox environment created successfully!\n")
 	fmt.Printf("Location: %s\n", env.Root)
+	fmt.Printf("Shell: %s\n", env.Shell)
 	fmt.Printf("\nTo enter the environment, run:\n")
 	fmt.Printf("  cd %s && isobox enter\n", path)
 }

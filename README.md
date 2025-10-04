@@ -30,6 +30,7 @@ IsoBox creates a **completely isolated Linux environment** in a `.isobox` direct
 - **Package Management**: Install Alpine Linux packages inside the environment
 - **Per-Directory**: Each project gets its own isolated environment
 - **Automatic Dependencies**: musl libc and SSL libraries installed automatically
+- **Multiple Shells**: Choose between bash, zsh, or sh as your default shell
 
 ## How It Works
 
@@ -66,8 +67,17 @@ You are now **jailed** in `.isobox/` - you cannot escape!
 ```bash
 git clone https://github.com/javanhut/isobox
 cd isobox
-go build -o isobox
-sudo mv isobox /usr/local/bin/
+make install
+```
+
+This installs:
+- Binary to `/usr/local/bin/isobox`
+- Scripts to `/usr/local/share/isobox/scripts/`
+
+To uninstall:
+```bash
+cd isobox
+make uninstall
 ```
 
 ### Basic Usage
@@ -79,6 +89,9 @@ cd ~/myproject
 
 # Initialize isolated environment (requires sudo for chroot later)
 isobox init
+
+# Or initialize with a specific shell (bash, zsh, or sh)
+isobox init --shell zsh
 
 # Enter the isolated environment (uses sudo chroot)
 isobox enter
@@ -104,13 +117,13 @@ bin  boot  dev  etc  home  lib  lib64  mnt  opt  proc  root  run  sbin  srv  sys
 ### Host Commands
 
 ```bash
-isobox init [path]            # Initialize isolated environment
-isobox enter                  # Enter isolated environment (uses sudo chroot)
-isobox exec <cmd>             # Execute command in isolation (uses sudo chroot)
-isobox migrate <src> <dest>   # Copy directory from host to isobox
-isobox recache                # Delete and rebuild the base system cache
-isobox status                 # Show environment status
-isobox destroy                # Remove isolated environment (uses sudo)
+isobox init [path] [--shell <shell>]  # Initialize isolated environment (shells: bash, zsh, sh)
+isobox enter                           # Enter isolated environment (uses sudo chroot)
+isobox exec <cmd>                      # Execute command in isolation (uses sudo chroot)
+isobox migrate <src> <dest>            # Copy directory from host to isobox
+isobox recache                         # Delete and rebuild the base system cache
+isobox status                          # Show environment status
+isobox destroy                         # Remove isolated environment (uses sudo)
 ```
 
 ### Inside Environment Commands

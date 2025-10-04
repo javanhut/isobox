@@ -16,6 +16,7 @@ type Environment struct {
 	Created   time.Time `json:"created"`
 	IsoboxDir string    `json:"isobox_dir"`
 	Username  string    `json:"username"`
+	Shell     string    `json:"shell"`
 }
 
 func getBaseCachePath() string {
@@ -90,6 +91,10 @@ func buildBaseSystem(cachePath string) error {
 		return err
 	}
 
+	if err := tmpEnv.setupShells(); err != nil {
+		fmt.Printf("  Warning: Shell setup failed: %v\n", err)
+	}
+
 	fmt.Println("\nCreating base system tarball...")
 	cmd := exec.Command("tar", "-czf", cachePath, "-C", tmpDir, ".")
 	if output, err := cmd.CombinedOutput(); err != nil {
@@ -109,7 +114,7 @@ func extractBaseSystem(targetDir, cachePath string) error {
 	return nil
 }
 
-func Initialize(path string) (*Environment, error) {
+func Initialize(path string, shell string) (*Environment, error) {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return nil, fmt.Errorf("get absolute path: %w", err)
@@ -122,11 +127,16 @@ func Initialize(path string) (*Environment, error) {
 	isoboxDir := filepath.Join(absPath, ".isobox")
 	username := filepath.Base(absPath)
 
+	if shell == "" {
+		shell = "bash"
+	}
+
 	env := &Environment{
 		Root:      absPath,
 		Created:   time.Now(),
 		IsoboxDir: isoboxDir,
 		Username:  username,
+		Shell:     shell,
 	}
 
 	baseCachePath := getBaseCachePath()
@@ -241,15 +251,25 @@ func (e *Environment) createDeviceNodes() error {
 		{"tty", 5, 0},
 	}
 
+	createdCount := 0
 	for _, dev := range devices {
 		devPath := filepath.Join(devDir, dev.name)
+
+		// Check if device node already exists
+		if _, err := os.Stat(devPath); err == nil {
+			continue
+		}
+
 		cmd := exec.Command("sudo", "mknod", "-m", "666", devPath, "c", fmt.Sprintf("%d", dev.major), fmt.Sprintf("%d", dev.minor))
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("mknod %s: %w", dev.name, err)
 		}
+		createdCount++
 	}
 
-	fmt.Println("  Created device nodes: /dev/null, /dev/zero, /dev/random, /dev/urandom, /dev/tty")
+	if createdCount > 0 {
+		fmt.Println("  Created device nodes: /dev/null, /dev/zero, /dev/random, /dev/urandom, /dev/tty")
+	}
 	return nil
 }
 
@@ -305,28 +325,100 @@ func (e *Environment) setupWithBusybox(busyboxPath string) error {
 
 func (e *Environment) installAlpineBaseDeps() error {
 	deps := []string{
+		// Core C/C++ runtime libraries
+		"musl",
+		"libgcc",
+
+		// Compression libraries
 		"zlib",
-		"pcre2",
+		"libbz2",
+		"xz-libs",
+		"zstd-libs",
+		"lz4-libs",
+
+		// SSL/TLS and networking
 		"libssl3",
 		"libcrypto3",
 		"ca-certificates-bundle",
-		"libidn2",
-		"libunistring",
 		"libcurl",
 		"nghttp2-libs",
-		"brotli-libs",
 		"c-ares",
+
+		// Text processing and regex
+		"pcre2",
+		"grep",
+		"sed",
+		"gawk",
+
+		// Internationalization
+		"libidn2",
+		"libunistring",
+
+		// Common utilities
+		"coreutils",
+		"findutils",
+		"tar",
+		"gzip",
+		"file",
+		"diffutils",
+		"patch",
+
+		// Archive handling
+		"brotli-libs",
 		"libpsl",
+
+		// Common libraries for applications
+		"libffi",
+		"libuuid",
+		"sqlite-libs",
+		"expat",
+		"libxml2",
+		"libxslt",
+		"yaml",
+		"gmp",
+		"mpfr4",
+		"libgomp",
+		"mpc1",
+
+		// JSON/data processing
+		"jansson",
+		"jq",
+
+		// Network utilities
+		"libevent",
+		"libarchive",
+		"curl",
+
+		// Development essentials
+		"pkgconf",
+		"binutils",
+		"make",
+
+		// Additional runtime support
+		"tzdata",
+		"attr",
+		"libcap",
+
+		// Process management
+		"procps-ng",
+		"util-linux",
+
+		// Additional shell utilities
+		"less",
+		"which",
+		"nano",
 	}
 
+	installedCount := 0
 	for _, dep := range deps {
 		if err := e.installAlpinePackage(dep); err != nil {
 			fmt.Printf("  Warning: failed to install %s: %v\n", dep, err)
 			continue
 		}
+		installedCount++
 	}
 
-	fmt.Println("  Added Alpine base dependencies")
+	fmt.Printf("  Added %d Alpine base dependencies\n", installedCount)
 	return nil
 }
 
@@ -350,9 +442,11 @@ func (e *Environment) addSSLCapableTools() error {
 }
 
 func (e *Environment) installAlpinePackage(pkgName string) error {
+	// Use Alpine v3.18 which still uses the old APK format (APKv2)
+	// Alpine v3.19+ uses APKv3 which requires apk-tools to extract
 	repos := []string{
-		"https://dl-cdn.alpinelinux.org/alpine/v3.19/main/x86_64/",
-		"https://dl-cdn.alpinelinux.org/alpine/v3.19/community/x86_64/",
+		"https://dl-cdn.alpinelinux.org/alpine/v3.18/main/x86_64/",
+		"https://dl-cdn.alpinelinux.org/alpine/v3.18/community/x86_64/",
 	}
 
 	var pkgURL string
@@ -398,6 +492,7 @@ func (e *Environment) installAlpinePackage(pkgName string) error {
 	}
 	defer os.Remove(tmpFile)
 
+	// Alpine v3.18 uses APKv2 format which is a standard tar.gz
 	cmd = exec.Command("tar", "-xzf", tmpFile, "-C", e.IsoboxDir)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("extract failed: %w (output: %s)", err, string(output))
@@ -663,14 +758,63 @@ func (e *Environment) setupInternalPackageManager() error {
 	return nil
 }
 
+func (e *Environment) setupShells() error {
+	fmt.Println("\nSetting up shells (bash, zsh, sh)...")
+
+	// Install shell dependencies first - these are critical
+	// Note: ncurses-libs is a meta-package, we need the actual library packages
+	deps := []string{
+		"ncurses-terminfo-base",
+		"libncursesw", // This contains libncursesw.so.6
+		"libformw",
+		"libmenuw",
+		"libpanelw",
+		"readline",
+		"libacl",
+		"libattr",
+		"utmps-libs",
+		"s6",
+		"skalibs",
+		"oniguruma",
+		"oniguruma-dev",
+	}
+	fmt.Println("  Installing shell dependencies...")
+	for _, dep := range deps {
+		if err := e.installAlpinePackage(dep); err != nil {
+			fmt.Printf("  ERROR: failed to install critical dependency %s: %v\n", dep, err)
+			return fmt.Errorf("shell dependency installation failed: %w", err)
+		}
+		fmt.Printf("    Installed %s\n", dep)
+	}
+
+	shells := []string{"bash", "zsh"}
+
+	for _, shell := range shells {
+		if err := e.installAlpinePackage(shell); err != nil {
+			fmt.Printf("  Warning: failed to install %s: %v\n", shell, err)
+			continue
+		}
+		fmt.Printf("  Added %s shell\n", shell)
+	}
+
+	fmt.Println("  sh is provided by BusyBox")
+	return nil
+}
+
 func findInternalScript() string {
 	searchPaths := []string{}
 
+	// System installation paths (checked first)
+	searchPaths = append(searchPaths, "/usr/local/share/isobox/scripts/isobox-internal.sh")
+	searchPaths = append(searchPaths, "/usr/share/isobox/scripts/isobox-internal.sh")
+
+	// Executable directory (for local builds)
 	if exePath, err := os.Executable(); err == nil {
 		exeDir := filepath.Dir(exePath)
 		searchPaths = append(searchPaths, filepath.Join(exeDir, "scripts/isobox-internal.sh"))
 	}
 
+	// Working directory (for development)
 	if workingDir, err := os.Getwd(); err == nil {
 		searchPaths = append(searchPaths, filepath.Join(workingDir, "scripts/isobox-internal.sh"))
 
@@ -709,11 +853,13 @@ func findGitRoot(startDir string) string {
 func (e *Environment) createEssentialFiles() error {
 	fmt.Println("\nCreating essential configuration files...")
 
+	shellPath := "/bin/" + e.Shell
+
 	etcPasswd := filepath.Join(e.IsoboxDir, "etc/passwd")
 	passwdContent := fmt.Sprintf(`root:x:0:0:root:/root:/bin/sh
-%s:x:1000:1000:%s:/home/%s:/bin/sh
+%s:x:1000:1000:%s:/home/%s:%s
 nobody:x:65534:65534:nobody:/:/bin/false
-`, e.Username, e.Username, e.Username)
+`, e.Username, e.Username, e.Username, shellPath)
 	if err := os.WriteFile(etcPasswd, []byte(passwdContent), 0644); err != nil {
 		return fmt.Errorf("create passwd: %w", err)
 	}
@@ -897,16 +1043,18 @@ func (e *Environment) copyProjectFiles() error {
 }
 
 func (e *Environment) EnterShell() error {
-	shell := "/bin/bash"
-	isoboxShell := filepath.Join(e.IsoboxDir, "bin/bash")
+	shell := "/bin/" + e.Shell
+	isoboxShell := filepath.Join(e.IsoboxDir, "bin", e.Shell)
 
 	if _, err := os.Stat(isoboxShell); os.IsNotExist(err) {
+		fmt.Printf("Warning: Configured shell '%s' not found, falling back to sh\n", e.Shell)
 		isoboxShell = filepath.Join(e.IsoboxDir, "bin/sh")
 		shell = "/bin/sh"
 	}
 
 	fmt.Printf("Entering isolated environment as user '%s'...\n", e.Username)
 	fmt.Printf("Root filesystem: %s\n", e.IsoboxDir)
+	fmt.Printf("Shell: %s\n", shell)
 	fmt.Printf("Working directory: /home/%s\n\n", e.Username)
 
 	homeDir := fmt.Sprintf("/home/%s", e.Username)
