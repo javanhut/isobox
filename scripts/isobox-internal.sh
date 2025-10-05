@@ -99,6 +99,175 @@ remove_from_db() {
     fi
 }
 
+get_package_dependencies() {
+    apk_file="$1"
+
+    # Extract .PKGINFO from the APK to read dependencies
+    pkginfo=$(tar -xzf "$apk_file" -O .PKGINFO 2>/dev/null)
+
+    if [ -z "$pkginfo" ]; then
+        return 0
+    fi
+
+    # Parse dependencies from PKGINFO
+    echo "$pkginfo" | grep "^depend = " | sed 's/^depend = //' | while read dep; do
+        # Remove version constraints (e.g., "package>=1.0" -> "package")
+        dep_name=$(echo "$dep" | sed 's/[<>=].*//')
+        echo "$dep_name"
+    done
+}
+
+# Map shared library dependencies (so:*) to package names
+map_so_to_package() {
+    so_name="$1"
+
+    # Common shared library to package mappings for Alpine
+    case "$so_name" in
+        so:libluv.so.1) echo "luv" ;;
+        so:libtermkey.so.1) echo "libtermkey" ;;
+        so:libvterm.so.0) echo "libvterm" ;;
+        so:libmsgpack-c.so.2) echo "msgpack-c" ;;
+        so:libtree-sitter.so.0) echo "tree-sitter" ;;
+        so:libunibilium.so.4) echo "unibilium" ;;
+        so:libintl.so.8) echo "musl-libintl" ;;
+        so:libluajit-5.1.so.2) echo "luajit" ;;
+        so:libuv.so.1) echo "libuv" ;;
+        so:libc.musl-*.so.1) echo "musl" ;;
+        so:libssl.so.3) echo "libssl3" ;;
+        so:libcrypto.so.3) echo "libcrypto3" ;;
+        so:libz.so.1) echo "zlib" ;;
+        so:libpcre2-8.so.0) echo "pcre2" ;;
+        so:libcurl.so.4) echo "libcurl" ;;
+        so:libnghttp2.so.14) echo "nghttp2-libs" ;;
+        so:libbrotlidec.so.1) echo "brotli-libs" ;;
+        so:libpsl.so.5) echo "libpsl" ;;
+        so:libc-ares.so.2) echo "c-ares" ;;
+        so:libidn2.so.0) echo "libidn2" ;;
+        so:libunistring.so.5) echo "libunistring" ;;
+        so:libncursesw.so.6) echo "libncursesw" ;;
+        so:libreadline.so.8) echo "readline" ;;
+        so:libonig.so.5) echo "oniguruma" ;;
+        so:libstdc++.so.6) echo "libstdc++" ;;
+        so:libgcc_s.so.1) echo "libgcc" ;;
+        *) return 1 ;;  # Unknown mapping
+    esac
+    return 0
+}
+
+install_package_with_deps() {
+    pkg_name="$1"
+    installing_marker="/tmp/isobox_installing_${pkg_name}"
+
+    # Prevent circular dependencies
+    if [ -f "$installing_marker" ]; then
+        return 0
+    fi
+
+    touch "$installing_marker"
+    trap "rm -f $installing_marker" EXIT
+
+    # Check if already installed
+    if is_installed "$pkg_name"; then
+        rm -f "$installing_marker"
+        return 0
+    fi
+
+    # Download the package first to check dependencies
+    mkdir -p "$ISOBOX_PKG_CACHE"
+    apk_file="$ISOBOX_PKG_CACHE/$pkg_name.apk"
+
+    if ! command -v wget >/dev/null 2>&1 && ! command -v curl >/dev/null 2>&1; then
+        echo "Error: wget or curl required for package installation"
+        rm -f "$installing_marker"
+        return 1
+    fi
+
+    # Find and download package
+    if command -v wget >/dev/null 2>&1; then
+        index_page=$(wget -qO- "https://dl-cdn.alpinelinux.org/alpine/v3.18/main/x86_64/" 2>&1)
+        pkg_list=$(echo "$index_page" | grep "href=\"$pkg_name-[0-9]" | head -1 | sed 's/.*href="//;s/".*//')
+
+        if [ -z "$pkg_list" ]; then
+            index_page=$(wget -qO- "https://dl-cdn.alpinelinux.org/alpine/v3.18/community/x86_64/" 2>&1)
+            pkg_list=$(echo "$index_page" | grep "href=\"$pkg_name-[0-9]" | head -1 | sed 's/.*href="//;s/".*//')
+            apk_url="https://dl-cdn.alpinelinux.org/alpine/v3.18/community/x86_64/$pkg_list"
+        else
+            apk_url="https://dl-cdn.alpinelinux.org/alpine/v3.18/main/x86_64/$pkg_list"
+        fi
+
+        if [ -z "$pkg_list" ]; then
+            echo "  Warning: Package $pkg_name not found, skipping..."
+            rm -f "$installing_marker"
+            return 0
+        fi
+
+        wget -q -O "$apk_file" "$apk_url" 2>&1 || {
+            rm -f "$installing_marker"
+            return 1
+        }
+    else
+        pkg_list=$(curl -s "https://dl-cdn.alpinelinux.org/alpine/v3.18/main/x86_64/" 2>/dev/null | grep "href=\"$pkg_name-[0-9]" | head -1 | sed 's/.*href="//;s/".*//')
+
+        if [ -z "$pkg_list" ]; then
+            pkg_list=$(curl -s "https://dl-cdn.alpinelinux.org/alpine/v3.18/community/x86_64/" 2>/dev/null | grep "href=\"$pkg_name-[0-9]" | head -1 | sed 's/.*href="//;s/".*//')
+            apk_url="https://dl-cdn.alpinelinux.org/alpine/v3.18/community/x86_64/$pkg_list"
+        else
+            apk_url="https://dl-cdn.alpinelinux.org/alpine/v3.18/main/x86_64/$pkg_list"
+        fi
+
+        if [ -z "$pkg_list" ]; then
+            echo "  Warning: Package $pkg_name not found, skipping..."
+            rm -f "$installing_marker"
+            return 0
+        fi
+
+        curl -s -o "$apk_file" "$apk_url" || {
+            rm -f "$installing_marker"
+            return 1
+        }
+    fi
+
+    # Get dependencies
+    deps=$(get_package_dependencies "$apk_file")
+
+    # Install dependencies first
+    if [ -n "$deps" ]; then
+        echo "  Resolving dependencies for $pkg_name..."
+        for dep in $deps; do
+            # Handle shared library dependencies (so:*)
+            if echo "$dep" | grep -q "^so:"; then
+                # Try to map so: dependency to package name
+                real_pkg=$(map_so_to_package "$dep")
+                if [ $? -eq 0 ] && [ -n "$real_pkg" ]; then
+                    dep="$real_pkg"
+                else
+                    # Unknown so: dependency, skip it
+                    continue
+                fi
+            fi
+
+            if ! is_installed "$dep"; then
+                echo "  Installing dependency: $dep"
+                install_package_with_deps "$dep"
+            fi
+        done
+    fi
+
+    # Now install the actual package
+    echo "  Installing $pkg_name..."
+    tar -xzf "$apk_file" -C / 2>/dev/null || {
+        echo "  Error: Failed to extract $pkg_name"
+        rm -f "$apk_file" "$installing_marker"
+        return 1
+    }
+
+    rm -f "$apk_file"
+    add_to_db "$pkg_name"
+    rm -f "$installing_marker"
+
+    return 0
+}
+
 install_package() {
     pkg_name="$1"
 
@@ -115,92 +284,16 @@ install_package() {
 
     host=$(detect_host_system)
     echo "Installing $pkg_name (host: $host)..."
-    mkdir -p "$ISOBOX_PKG_CACHE"
+    echo "Resolving dependencies..."
 
-    echo "Downloading from Alpine Linux repository..."
+    install_package_with_deps "$pkg_name"
 
-    if ! command -v wget >/dev/null 2>&1 && ! command -v curl >/dev/null 2>&1; then
-        echo "Error: wget or curl required for package installation"
-        echo "Please install wget or curl first"
-        return 1
-    fi
-
-    apk_url="https://dl-cdn.alpinelinux.org/alpine/v3.19/main/x86_64/$pkg_name-"
-    apk_file="$ISOBOX_PKG_CACHE/$pkg_name.apk"
-
-    if command -v wget >/dev/null 2>&1; then
-        echo "Fetching package list..."
-
-        index_page=$(wget -qO- "https://dl-cdn.alpinelinux.org/alpine/v3.19/main/x86_64/" 2>&1)
-        if [ $? -ne 0 ]; then
-            echo "Error: Failed to fetch package index"
-            echo "Debug: $index_page"
-            return 1
-        fi
-
-        pkg_list=$(echo "$index_page" | grep "href=\"$pkg_name-[0-9]" | head -1 | sed 's/.*href="//;s/".*//')
-
-        if [ -z "$pkg_list" ]; then
-            echo "Warning: Package not found in main repo, trying community repo..."
-            index_page=$(wget -qO- "https://dl-cdn.alpinelinux.org/alpine/v3.19/community/x86_64/" 2>&1)
-            pkg_list=$(echo "$index_page" | grep "href=\"$pkg_name-[0-9]" | head -1 | sed 's/.*href="//;s/".*//')
-            apk_url="https://dl-cdn.alpinelinux.org/alpine/v3.19/community/x86_64/$pkg_list"
-        else
-            apk_url="https://dl-cdn.alpinelinux.org/alpine/v3.19/main/x86_64/$pkg_list"
-        fi
-
-        if [ -z "$pkg_list" ]; then
-            echo "Error: Package $pkg_name not found in Alpine repositories"
-            return 1
-        fi
-
-        echo "Downloading $pkg_list..."
-        wget -q --show-progress -O "$apk_file" "$apk_url" 2>&1 || {
-            echo "Error: Failed to download package"
-            return 1
-        }
+    if [ $? -eq 0 ]; then
+        echo "Successfully installed $pkg_name and its dependencies"
     else
-        echo "Fetching package list..."
-        pkg_list=$(curl -s "https://dl-cdn.alpinelinux.org/alpine/v3.19/main/x86_64/" 2>/dev/null | grep "href=\"$pkg_name-[0-9]" | head -1 | sed 's/.*href="//;s/".*//')
-
-        if [ -z "$pkg_list" ]; then
-            echo "Warning: Package not found in main repo, trying community repo..."
-            pkg_list=$(curl -s "https://dl-cdn.alpinelinux.org/alpine/v3.19/community/x86_64/" 2>/dev/null | grep "href=\"$pkg_name-[0-9]" | head -1 | sed 's/.*href="//;s/".*//')
-            apk_url="https://dl-cdn.alpinelinux.org/alpine/v3.19/community/x86_64/$pkg_list"
-        else
-            apk_url="https://dl-cdn.alpinelinux.org/alpine/v3.19/main/x86_64/$pkg_list"
-        fi
-
-        if [ -z "$pkg_list" ]; then
-            echo "Error: Package $pkg_name not found in Alpine repositories"
-            return 1
-        fi
-
-        echo "Downloading $pkg_list..."
-        curl -# -o "$apk_file" "$apk_url" || {
-            echo "Error: Failed to download package"
-            return 1
-        }
-    fi
-
-    if [ ! -f "$apk_file" ]; then
-        echo "Error: Package file not found after download"
+        echo "Failed to install $pkg_name"
         return 1
     fi
-
-    echo "Extracting package..."
-    tar -xzf "$apk_file" -C / 2>/dev/null || {
-        echo "Error: Failed to extract package"
-        rm -f "$apk_file"
-        return 1
-    }
-
-    rm -f "$apk_file"
-
-    install_common_dependencies
-
-    add_to_db "$pkg_name"
-    echo "Successfully installed $pkg_name"
 }
 
 install_common_dependencies() {

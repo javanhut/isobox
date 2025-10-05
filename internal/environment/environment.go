@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -48,6 +49,9 @@ func RebuildCache() error {
 }
 
 func buildBaseSystem(cachePath string) error {
+	// Install performance optimization tools
+	installOptimizationTools()
+
 	tmpDir, err := os.MkdirTemp("", "isobox-base-*")
 	if err != nil {
 		return fmt.Errorf("create temp dir: %w", err)
@@ -96,21 +100,106 @@ func buildBaseSystem(cachePath string) error {
 	}
 
 	fmt.Println("\nCreating base system tarball...")
-	cmd := exec.Command("tar", "-czf", cachePath, "-C", tmpDir, ".")
+	fmt.Print("  Compressing... ")
+
+	// Use pigz for parallel compression if available, otherwise use gzip
+	var cmd *exec.Cmd
+	if _, err := exec.LookPath("pigz"); err == nil {
+		// pigz uses all available CPU cores by default
+		cmd = exec.Command("tar", "--use-compress-program=pigz", "-cf", cachePath, "-C", tmpDir, ".")
+	} else {
+		cmd = exec.Command("tar", "-czf", cachePath, "-C", tmpDir, ".")
+	}
+
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("create tarball: %w (output: %s)", err, string(output))
 	}
 
+	fmt.Println("Done!")
 	fmt.Printf("Base system cached at: %s\n", cachePath)
 	return nil
 }
 
+func installOptimizationTools() {
+	// Check if tools are already installed
+	hasAria2c := false
+	hasPigz := false
+
+	if _, err := exec.LookPath("aria2c"); err == nil {
+		hasAria2c = true
+	}
+	if _, err := exec.LookPath("pigz"); err == nil {
+		hasPigz = true
+	}
+
+	if hasAria2c && hasPigz {
+		return
+	}
+
+	// Detect OS
+	osRelease, err := os.ReadFile("/etc/os-release")
+	if err != nil {
+		return
+	}
+
+	osInfo := string(osRelease)
+	var installCmd []string
+	var packages []string
+
+	if !hasAria2c {
+		packages = append(packages, "aria2")
+	}
+	if !hasPigz {
+		packages = append(packages, "pigz")
+	}
+
+	// Determine package manager based on OS
+	if strings.Contains(osInfo, "ID=arch") || strings.Contains(osInfo, "ID_LIKE=arch") {
+		installCmd = append([]string{"pacman", "-S", "--noconfirm", "--needed"}, packages...)
+	} else if strings.Contains(osInfo, "ID=ubuntu") || strings.Contains(osInfo, "ID=debian") || strings.Contains(osInfo, "ID_LIKE=debian") {
+		installCmd = append([]string{"apt-get", "install", "-y"}, packages...)
+	} else if strings.Contains(osInfo, "ID=fedora") || strings.Contains(osInfo, "ID=rhel") || strings.Contains(osInfo, "ID_LIKE=\"rhel fedora\"") {
+		installCmd = append([]string{"dnf", "install", "-y"}, packages...)
+	} else if strings.Contains(osInfo, "ID=centos") {
+		installCmd = append([]string{"yum", "install", "-y"}, packages...)
+	} else if strings.Contains(osInfo, "ID=opensuse") || strings.Contains(osInfo, "ID_LIKE=\"suse\"") {
+		installCmd = append([]string{"zypper", "install", "-y"}, packages...)
+	} else if strings.Contains(osInfo, "ID=alpine") {
+		installCmd = append([]string{"apk", "add"}, packages...)
+	} else {
+		// Unknown OS, skip installation
+		return
+	}
+
+	fmt.Printf("Installing performance tools (%s)...\n", strings.Join(packages, ", "))
+
+	cmd := exec.Command("sudo", installCmd...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		fmt.Printf("  Warning: Failed to install optimization tools: %v\n", err)
+		fmt.Printf("  Continuing with standard tools (wget, gzip)\n")
+	} else {
+		fmt.Println("  Performance tools installed successfully!")
+	}
+}
+
 func extractBaseSystem(targetDir, cachePath string) error {
-	fmt.Println("Extracting base system...")
-	cmd := exec.Command("tar", "-xzf", cachePath, "-C", targetDir)
+	fmt.Print("Extracting base system... ")
+
+	// Use pigz for parallel decompression if available
+	var cmd *exec.Cmd
+	if _, err := exec.LookPath("pigz"); err == nil {
+		cmd = exec.Command("tar", "--use-compress-program=pigz", "-xf", cachePath, "-C", targetDir)
+	} else {
+		cmd = exec.Command("tar", "-xzf", cachePath, "-C", targetDir)
+	}
+
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("extract tarball: %w (output: %s)", err, string(output))
 	}
+	fmt.Println("Done!")
 	return nil
 }
 
@@ -421,7 +510,6 @@ func (e *Environment) installAlpineBaseDeps() error {
 		"skalibs",
 		"oniguruma",
 		"oniguruma-dev",
-		"libcap",
 		"luv",
 		"libtermkey",
 		"libvterm",
@@ -433,17 +521,7 @@ func (e *Environment) installAlpineBaseDeps() error {
 		"libuv",
 	}
 
-	installedCount := 0
-	for _, dep := range deps {
-		if err := e.installAlpinePackage(dep); err != nil {
-			fmt.Printf("  Warning: failed to install %s: %v\n", dep, err)
-			continue
-		}
-		installedCount++
-	}
-
-	fmt.Printf("  Added %d Alpine base dependencies\n", installedCount)
-	return nil
+	return e.installAlpinePackages(deps)
 }
 
 func (e *Environment) addSSLCapableTools() error {
@@ -453,16 +531,245 @@ func (e *Environment) addSSLCapableTools() error {
 	}
 
 	packages := []string{"wget", "ca-certificates"}
+	return e.installAlpinePackages(packages)
+}
 
-	for _, pkg := range packages {
-		if err := e.installAlpinePackage(pkg); err != nil {
-			fmt.Printf("  Warning: failed to install %s: %v\n", pkg, err)
-			continue
-		}
-		fmt.Printf("  Added Alpine %s\n", pkg)
+// installAlpinePackages installs multiple packages efficiently by caching repo indices
+func (e *Environment) installAlpinePackages(packages []string) error {
+	repos := []string{
+		"https://dl-cdn.alpinelinux.org/alpine/v3.18/main/x86_64/",
+		"https://dl-cdn.alpinelinux.org/alpine/v3.18/community/x86_64/",
 	}
 
+	// Build package URL cache in parallel
+	fmt.Printf("  Building package index...\n")
+	pkgURLs := make(map[string]string)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+
+	// Download repo indices concurrently
+	for _, baseURL := range repos {
+		wg.Add(1)
+		go func(url string) {
+			defer wg.Done()
+
+			cmd := exec.Command("wget", "-qO-", url)
+			output, err := cmd.Output()
+			if err != nil {
+				return
+			}
+
+			lines := strings.Split(string(output), "\n")
+			for _, line := range lines {
+				for _, pkgName := range packages {
+					if strings.Contains(line, fmt.Sprintf(`href="%s-`, pkgName)) {
+						start := strings.Index(line, `href="`) + 6
+						end := strings.Index(line[start:], `"`)
+						if end > 0 {
+							pkgFile := line[start : start+end]
+							if strings.HasPrefix(pkgFile, pkgName+"-") && strings.HasSuffix(pkgFile, ".apk") {
+								mu.Lock()
+								if _, exists := pkgURLs[pkgName]; !exists {
+									pkgURLs[pkgName] = url + pkgFile
+								}
+								mu.Unlock()
+								break
+							}
+						}
+					}
+				}
+			}
+		}(baseURL)
+	}
+	wg.Wait()
+
+	totalPkgs := len(packages)
+	fmt.Printf("  Installing %d packages...\n", totalPkgs)
+
+	// Phase 1: Download all packages in parallel (16 workers)
+	type downloadJob struct {
+		name string
+		url  string
+	}
+
+	type downloadResult struct {
+		name    string
+		tmpFile string
+		success bool
+	}
+
+	downloadJobs := make(chan downloadJob, totalPkgs)
+	downloadResults := make(chan downloadResult, totalPkgs)
+
+	// Start 16 download workers
+	numDownloadWorkers := 16
+	for w := 0; w < numDownloadWorkers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for job := range downloadJobs {
+				tmpFile, success := downloadPackageFile(job.name, job.url)
+				downloadResults <- downloadResult{
+					name:    job.name,
+					tmpFile: tmpFile,
+					success: success,
+				}
+			}
+		}()
+	}
+
+	// Queue downloads
+	for _, pkgName := range packages {
+		pkgURL, found := pkgURLs[pkgName]
+		if !found {
+			downloadResults <- downloadResult{name: pkgName, success: false}
+			continue
+		}
+		downloadJobs <- downloadJob{name: pkgName, url: pkgURL}
+	}
+	close(downloadJobs)
+
+	// Wait for all downloads to complete
+	go func() {
+		wg.Wait()
+		close(downloadResults)
+	}()
+
+	// Collect downloaded files
+	downloadedFiles := make(map[string]string)
+	downloadedCount := 0
+
+	fmt.Print("  Downloading: [")
+	barWidth := 40
+
+	for result := range downloadResults {
+		if result.success {
+			downloadedFiles[result.name] = result.tmpFile
+			downloadedCount++
+		}
+
+		// Update progress bar
+		progress := float64(len(downloadedFiles)+1) / float64(totalPkgs)
+		filledWidth := int(progress * float64(barWidth))
+
+		fmt.Print("\r  Downloading: [")
+		for i := 0; i < barWidth; i++ {
+			if i < filledWidth {
+				fmt.Print("=")
+			} else if i == filledWidth {
+				fmt.Print(">")
+			} else {
+				fmt.Print(" ")
+			}
+		}
+		fmt.Printf("] %d/%d", len(downloadedFiles), totalPkgs)
+	}
+	fmt.Println()
+
+	// Phase 2: Extract all packages in parallel (16 workers)
+	type extractJob struct {
+		name    string
+		tmpFile string
+	}
+
+	extractJobs := make(chan extractJob, len(downloadedFiles))
+	extractResults := make(chan bool, len(downloadedFiles))
+
+	// Start 16 extraction workers
+	numExtractWorkers := 16
+	for w := 0; w < numExtractWorkers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for job := range extractJobs {
+				success := e.extractPackageFile(job.tmpFile)
+				os.Remove(job.tmpFile)
+				extractResults <- success
+			}
+		}()
+	}
+
+	// Queue extractions
+	for name, tmpFile := range downloadedFiles {
+		extractJobs <- extractJob{name: name, tmpFile: tmpFile}
+	}
+	close(extractJobs)
+
+	// Wait for all extractions to complete
+	go func() {
+		wg.Wait()
+		close(extractResults)
+	}()
+
+	// Display extraction progress
+	installedCount := 0
+	extractedCount := 0
+
+	fmt.Print("  Extracting: [")
+
+	for success := range extractResults {
+		if success {
+			installedCount++
+		}
+		extractedCount++
+
+		// Update progress bar
+		progress := float64(extractedCount) / float64(len(downloadedFiles))
+		filledWidth := int(progress * float64(barWidth))
+
+		fmt.Print("\r  Extracting: [")
+		for i := 0; i < barWidth; i++ {
+			if i < filledWidth {
+				fmt.Print("=")
+			} else if i == filledWidth {
+				fmt.Print(">")
+			} else {
+				fmt.Print(" ")
+			}
+		}
+		fmt.Printf("] %d/%d", extractedCount, len(downloadedFiles))
+	}
+
+	fmt.Printf("\n  Added %d Alpine packages\n", installedCount)
 	return nil
+}
+
+// downloadPackageFile downloads a single package using aria2c or wget
+func downloadPackageFile(pkgName, pkgURL string) (string, bool) {
+	tmpFile := fmt.Sprintf("/tmp/%s-%d.apk", pkgName, time.Now().UnixNano())
+
+	// Try aria2c first (faster with multi-connection support)
+	if _, err := exec.LookPath("aria2c"); err == nil {
+		cmd := exec.Command("aria2c",
+			"-x", "4", // 4 connections per download
+			"-s", "4", // split into 4 segments
+			"-k", "1M", // chunk size
+			"--quiet=true",
+			"--allow-overwrite=true",
+			"-d", "/tmp",
+			"-o", filepath.Base(tmpFile),
+			pkgURL)
+		if err := cmd.Run(); err == nil {
+			return tmpFile, true
+		}
+	}
+
+	// Fallback to wget
+	cmd := exec.Command("wget", "-q", "-O", tmpFile, pkgURL)
+	if err := cmd.Run(); err != nil {
+		return "", false
+	}
+
+	return tmpFile, true
+}
+
+// extractPackageFile extracts a single package to the target directory
+func (e *Environment) extractPackageFile(tmpFile string) bool {
+	cmd := exec.Command("tar", "-xzf", tmpFile, "-C", e.IsoboxDir)
+	if err := cmd.Run(); err != nil {
+		return false
+	}
+	return true
 }
 
 func (e *Environment) installAlpinePackage(pkgName string) error {
@@ -785,31 +1092,18 @@ func (e *Environment) setupInternalPackageManager() error {
 func (e *Environment) setupShells() error {
 	fmt.Println("\nSetting up shells (bash, zsh, sh)...")
 
-	// Install shell dependencies first - these are critical
-	// Note: ncurses-libs is a meta-package, we need the actual library packages
-	deps := []string{
+	// Install shell dependencies and shells together
+	packages := []string{
 		"python3",
 		"gcc",
 		"go",
 		"vim",
-	}
-	fmt.Println("  Installing shell dependencies...")
-	for _, dep := range deps {
-		if err := e.installAlpinePackage(dep); err != nil {
-			fmt.Printf("  ERROR: failed to install critical dependency %s: %v\n", dep, err)
-			return fmt.Errorf("shell dependency installation failed: %w", err)
-		}
-		fmt.Printf("    Installed %s\n", dep)
+		"bash",
+		"zsh",
 	}
 
-	shells := []string{"bash", "zsh"}
-
-	for _, shell := range shells {
-		if err := e.installAlpinePackage(shell); err != nil {
-			fmt.Printf("  Warning: failed to install %s: %v\n", shell, err)
-			continue
-		}
-		fmt.Printf("  Added %s shell\n", shell)
+	if err := e.installAlpinePackages(packages); err != nil {
+		return fmt.Errorf("shell installation failed: %w", err)
 	}
 
 	fmt.Println("  sh is provided by BusyBox")
