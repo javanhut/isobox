@@ -1338,11 +1338,13 @@ func (e *Environment) mountPseudoFilesystems() error {
 		{"dev/pts", "devpts", "devpts", ""},
 	}
 
+	mountedAny := false
 	for _, mnt := range mounts {
 		target := filepath.Join(e.IsoboxDir, mnt.target)
 
 		if err := os.MkdirAll(target, 0755); err != nil {
-			return fmt.Errorf("create mount point %s: %w", mnt.target, err)
+			fmt.Printf("  Warning: Cannot create mount point %s: %v\n", mnt.target, err)
+			continue
 		}
 
 		var cmd *exec.Cmd
@@ -1355,9 +1357,18 @@ func (e *Environment) mountPseudoFilesystems() error {
 		if output, err := cmd.CombinedOutput(); err != nil {
 			outputStr := string(output)
 			if !strings.Contains(outputStr, "already mounted") {
-				return fmt.Errorf("mount %s failed: %w (output: %s)", mnt.target, err, outputStr)
+				if strings.Contains(outputStr, "permission denied") || strings.Contains(outputStr, "Operation not permitted") {
+					if !mountedAny {
+						fmt.Printf("  Warning: Cannot mount filesystems (restricted environment like Docker)\n")
+						fmt.Printf("  Some commands (ps, top, mount) may not work without /proc, /sys mounted\n")
+					}
+					continue
+				}
+				fmt.Printf("  Warning: Failed to mount %s: %v\n", mnt.target, err)
+				continue
 			}
 		}
+		mountedAny = true
 	}
 
 	return nil
@@ -1371,20 +1382,21 @@ func (e *Environment) unmountPseudoFilesystems() error {
 		"proc",
 	}
 
-	var lastErr error
 	for _, mnt := range mounts {
 		target := filepath.Join(e.IsoboxDir, mnt)
 
 		cmd := exec.Command("sudo", "umount", target)
 		if output, err := cmd.CombinedOutput(); err != nil {
 			outputStr := string(output)
-			if !strings.Contains(outputStr, "not mounted") && !strings.Contains(outputStr, "no mount point") {
-				lastErr = fmt.Errorf("unmount %s failed: %w (output: %s)", mnt, err, outputStr)
+			if !strings.Contains(outputStr, "not mounted") && !strings.Contains(outputStr, "no mount point") &&
+			   !strings.Contains(outputStr, "permission denied") && !strings.Contains(outputStr, "Operation not permitted") {
+				// Only log unexpected unmount errors, don't fail
+				fmt.Printf("  Warning: Failed to unmount %s: %v\n", mnt, err)
 			}
 		}
 	}
 
-	return lastErr
+	return nil
 }
 
 func (e *Environment) EnterShell() error {
@@ -1425,9 +1437,7 @@ func (e *Environment) EnterShell() error {
 	fmt.Printf("Shell: %s\n", shell)
 	fmt.Printf("Working directory: /home/%s\n\n", e.Username)
 
-	if err := e.mountPseudoFilesystems(); err != nil {
-		return fmt.Errorf("failed to mount pseudo-filesystems: %w", err)
-	}
+	e.mountPseudoFilesystems()
 	defer e.unmountPseudoFilesystems()
 
 	homeDir := fmt.Sprintf("/home/%s", e.Username)
@@ -1452,9 +1462,7 @@ func (e *Environment) EnterShell() error {
 func (e *Environment) Execute(command []string) error {
 	fmt.Printf("Executing in isolated environment as user '%s': %v\n", e.Username, command)
 
-	if err := e.mountPseudoFilesystems(); err != nil {
-		return fmt.Errorf("failed to mount pseudo-filesystems: %w", err)
-	}
+	e.mountPseudoFilesystems()
 	defer e.unmountPseudoFilesystems()
 
 	homeDir := fmt.Sprintf("/home/%s", e.Username)
