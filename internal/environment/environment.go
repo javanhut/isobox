@@ -351,13 +351,16 @@ func (e *Environment) createDeviceNodes() error {
 
 		cmd := exec.Command("sudo", "mknod", "-m", "666", devPath, "c", fmt.Sprintf("%d", dev.major), fmt.Sprintf("%d", dev.minor))
 		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("mknod %s: %w", dev.name, err)
+			// Device node creation failed - this is usually a permission issue
+			// Device nodes will be created when entering the environment (with sudo chroot)
+			fmt.Printf("  Warning: Could not create /dev/%s (will be created when entering environment)\n", dev.name)
+			continue
 		}
 		createdCount++
 	}
 
 	if createdCount > 0 {
-		fmt.Println("  Created device nodes: /dev/null, /dev/zero, /dev/random, /dev/urandom, /dev/tty")
+		fmt.Printf("  Created device nodes: /dev/null, /dev/zero, /dev/random, /dev/urandom, /dev/tty\n")
 	}
 	return nil
 }
@@ -1322,7 +1325,92 @@ func (e *Environment) copyProjectFiles() error {
 	return nil
 }
 
+func (e *Environment) mountPseudoFilesystems() error {
+	mounts := []struct {
+		target string
+		fstype string
+		source string
+		flags  string
+	}{
+		{"proc", "proc", "proc", ""},
+		{"sys", "sysfs", "sysfs", ""},
+		{"dev", "none", "/dev", "bind"},
+		{"dev/pts", "devpts", "devpts", ""},
+	}
+
+	for _, mnt := range mounts {
+		target := filepath.Join(e.IsoboxDir, mnt.target)
+
+		if err := os.MkdirAll(target, 0755); err != nil {
+			return fmt.Errorf("create mount point %s: %w", mnt.target, err)
+		}
+
+		var cmd *exec.Cmd
+		if mnt.flags != "" {
+			cmd = exec.Command("sudo", "mount", "-t", mnt.fstype, "-o", mnt.flags, mnt.source, target)
+		} else {
+			cmd = exec.Command("sudo", "mount", "-t", mnt.fstype, mnt.source, target)
+		}
+
+		if output, err := cmd.CombinedOutput(); err != nil {
+			outputStr := string(output)
+			if !strings.Contains(outputStr, "already mounted") {
+				return fmt.Errorf("mount %s failed: %w (output: %s)", mnt.target, err, outputStr)
+			}
+		}
+	}
+
+	return nil
+}
+
+func (e *Environment) unmountPseudoFilesystems() error {
+	mounts := []string{
+		"dev/pts",
+		"dev",
+		"sys",
+		"proc",
+	}
+
+	var lastErr error
+	for _, mnt := range mounts {
+		target := filepath.Join(e.IsoboxDir, mnt)
+
+		cmd := exec.Command("sudo", "umount", target)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			outputStr := string(output)
+			if !strings.Contains(outputStr, "not mounted") && !strings.Contains(outputStr, "no mount point") {
+				lastErr = fmt.Errorf("unmount %s failed: %w (output: %s)", mnt, err, outputStr)
+			}
+		}
+	}
+
+	return lastErr
+}
+
 func (e *Environment) EnterShell() error {
+	// Ensure device nodes exist (may have failed during init without sudo)
+	devDir := filepath.Join(e.IsoboxDir, "dev")
+	devices := []struct {
+		name  string
+		major int
+		minor int
+	}{
+		{"null", 1, 3},
+		{"zero", 1, 5},
+		{"random", 1, 8},
+		{"urandom", 1, 9},
+		{"tty", 5, 0},
+	}
+
+	for _, dev := range devices {
+		devPath := filepath.Join(devDir, dev.name)
+		if _, err := os.Stat(devPath); os.IsNotExist(err) {
+			// Try to create device node with sudo (we're about to use sudo anyway)
+			cmd := exec.Command("sudo", "mknod", "-m", "666", devPath, "c", fmt.Sprintf("%d", dev.major), fmt.Sprintf("%d", dev.minor))
+			cmd.Run() // Ignore errors - not critical
+		}
+	}
+
 	shell := "/bin/" + e.Shell
 	isoboxShell := filepath.Join(e.IsoboxDir, "bin", e.Shell)
 
@@ -1336,6 +1424,11 @@ func (e *Environment) EnterShell() error {
 	fmt.Printf("Root filesystem: %s\n", e.IsoboxDir)
 	fmt.Printf("Shell: %s\n", shell)
 	fmt.Printf("Working directory: /home/%s\n\n", e.Username)
+
+	if err := e.mountPseudoFilesystems(); err != nil {
+		return fmt.Errorf("failed to mount pseudo-filesystems: %w", err)
+	}
+	defer e.unmountPseudoFilesystems()
 
 	homeDir := fmt.Sprintf("/home/%s", e.Username)
 
@@ -1358,6 +1451,11 @@ func (e *Environment) EnterShell() error {
 
 func (e *Environment) Execute(command []string) error {
 	fmt.Printf("Executing in isolated environment as user '%s': %v\n", e.Username, command)
+
+	if err := e.mountPseudoFilesystems(); err != nil {
+		return fmt.Errorf("failed to mount pseudo-filesystems: %w", err)
+	}
+	defer e.unmountPseudoFilesystems()
 
 	homeDir := fmt.Sprintf("/home/%s", e.Username)
 	cmdStr := strings.Join(command, " ")
