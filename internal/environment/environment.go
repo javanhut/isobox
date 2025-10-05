@@ -20,6 +20,151 @@ type Environment struct {
 	Shell     string    `json:"shell"`
 }
 
+type OSInfo struct {
+	ID         string
+	IDLike     string
+	PkgManager string
+	InstallCmd []string
+}
+
+func detectOS() (*OSInfo, error) {
+	osRelease, err := os.ReadFile("/etc/os-release")
+	if err != nil {
+		return nil, fmt.Errorf("cannot read /etc/os-release: %w", err)
+	}
+
+	info := &OSInfo{}
+	lines := strings.Split(string(osRelease), "\n")
+
+	for _, line := range lines {
+		if strings.HasPrefix(line, "ID=") {
+			info.ID = strings.Trim(strings.TrimPrefix(line, "ID="), "\"")
+		} else if strings.HasPrefix(line, "ID_LIKE=") {
+			info.IDLike = strings.Trim(strings.TrimPrefix(line, "ID_LIKE="), "\"")
+		}
+	}
+
+	// Determine package manager and install command
+	if info.ID == "arch" || strings.Contains(info.IDLike, "arch") {
+		info.PkgManager = "pacman"
+		info.InstallCmd = []string{"pacman", "-S", "--noconfirm", "--needed"}
+	} else if info.ID == "ubuntu" || info.ID == "debian" || strings.Contains(info.IDLike, "debian") {
+		info.PkgManager = "apt"
+		info.InstallCmd = []string{"apt-get", "install", "-y"}
+	} else if info.ID == "fedora" || info.ID == "rhel" || strings.Contains(info.IDLike, "rhel") || strings.Contains(info.IDLike, "fedora") {
+		info.PkgManager = "dnf"
+		info.InstallCmd = []string{"dnf", "install", "-y"}
+	} else if info.ID == "centos" {
+		info.PkgManager = "yum"
+		info.InstallCmd = []string{"yum", "install", "-y"}
+	} else if info.ID == "opensuse" || strings.Contains(info.IDLike, "suse") {
+		info.PkgManager = "zypper"
+		info.InstallCmd = []string{"zypper", "install", "-y"}
+	} else if info.ID == "alpine" {
+		info.PkgManager = "apk"
+		info.InstallCmd = []string{"apk", "add"}
+	} else {
+		return nil, fmt.Errorf("unsupported OS: %s (ID_LIKE: %s)", info.ID, info.IDLike)
+	}
+
+	return info, nil
+}
+
+func isToolInstalled(tool string) bool {
+	_, err := exec.LookPath(tool)
+	return err == nil
+}
+
+func ensureDependencies() error {
+	fmt.Println("Checking system dependencies...")
+
+	osInfo, err := detectOS()
+	if err != nil {
+		return fmt.Errorf("OS detection failed: %w", err)
+	}
+
+	fmt.Printf("  Detected OS: %s (package manager: %s)\n", osInfo.ID, osInfo.PkgManager)
+
+	// Required dependencies
+	requiredTools := map[string]string{
+		"sudo":    "sudo",
+		"busybox": "busybox-static",
+		"bash":    "bash",
+		"tar":     "tar",
+		"gzip":    "gzip",
+	}
+
+	// Adjust package names for specific distros
+	if osInfo.PkgManager == "apt" {
+		requiredTools["busybox"] = "busybox-static"
+	} else if osInfo.PkgManager == "pacman" {
+		requiredTools["busybox"] = "busybox"
+	} else if osInfo.PkgManager == "apk" {
+		requiredTools["busybox"] = "busybox-static"
+	}
+
+	var missingTools []string
+	var missingPackages []string
+
+	for tool, pkg := range requiredTools {
+		if !isToolInstalled(tool) {
+			fmt.Printf("  Missing: %s\n", tool)
+			missingTools = append(missingTools, tool)
+			missingPackages = append(missingPackages, pkg)
+		}
+	}
+
+	if len(missingTools) == 0 {
+		fmt.Println("  All required dependencies are installed")
+		return nil
+	}
+
+	// Check if we can install (need sudo or root)
+	if os.Geteuid() != 0 && !isToolInstalled("sudo") {
+		return fmt.Errorf("missing tools: %v. Please install them manually or run as root", missingTools)
+	}
+
+	// Install missing packages
+	fmt.Printf("Installing missing dependencies: %s\n", strings.Join(missingTools, ", "))
+
+	// Update package cache for apt/dnf/zypper
+	if osInfo.PkgManager == "apt" {
+		updateCmd := exec.Command("sudo", "apt-get", "update")
+		if os.Geteuid() == 0 {
+			updateCmd = exec.Command("apt-get", "update")
+		}
+		fmt.Println("  Updating package cache...")
+		if err := updateCmd.Run(); err != nil {
+			fmt.Printf("  Warning: Failed to update package cache: %v\n", err)
+		}
+	}
+
+	// Install packages
+	var installCmd *exec.Cmd
+	if os.Geteuid() == 0 {
+		installCmd = exec.Command(osInfo.InstallCmd[0], append(osInfo.InstallCmd[1:], missingPackages...)...)
+	} else {
+		installCmd = exec.Command("sudo", append(osInfo.InstallCmd, missingPackages...)...)
+	}
+
+	installCmd.Stdout = os.Stdout
+	installCmd.Stderr = os.Stderr
+
+	if err := installCmd.Run(); err != nil {
+		return fmt.Errorf("failed to install dependencies: %w", err)
+	}
+
+	// Verify installation
+	for tool := range requiredTools {
+		if !isToolInstalled(tool) {
+			return fmt.Errorf("installation succeeded but %s is still not found in PATH", tool)
+		}
+	}
+
+	fmt.Println("  All dependencies installed successfully")
+	return nil
+}
+
 func getBaseCachePath() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -118,58 +263,37 @@ func buildBaseSystem(cachePath string) error {
 
 func installOptimizationTools() {
 	// Check if tools are already installed
-	hasAria2c := false
-	hasPigz := false
-
-	if _, err := exec.LookPath("aria2c"); err == nil {
-		hasAria2c = true
-	}
-	if _, err := exec.LookPath("pigz"); err == nil {
-		hasPigz = true
-	}
-
-	if hasAria2c && hasPigz {
+	if isToolInstalled("aria2c") && isToolInstalled("pigz") {
 		return
 	}
 
-	// Detect OS
-	osRelease, err := os.ReadFile("/etc/os-release")
+	osInfo, err := detectOS()
 	if err != nil {
+		fmt.Printf("  Warning: Could not detect OS for optimization tools: %v\n", err)
 		return
 	}
 
-	osInfo := string(osRelease)
-	var installCmd []string
 	var packages []string
-
-	if !hasAria2c {
+	if !isToolInstalled("aria2c") {
 		packages = append(packages, "aria2")
 	}
-	if !hasPigz {
+	if !isToolInstalled("pigz") {
 		packages = append(packages, "pigz")
 	}
 
-	// Determine package manager based on OS
-	if strings.Contains(osInfo, "ID=arch") || strings.Contains(osInfo, "ID_LIKE=arch") {
-		installCmd = append([]string{"pacman", "-S", "--noconfirm", "--needed"}, packages...)
-	} else if strings.Contains(osInfo, "ID=ubuntu") || strings.Contains(osInfo, "ID=debian") || strings.Contains(osInfo, "ID_LIKE=debian") {
-		installCmd = append([]string{"apt-get", "install", "-y"}, packages...)
-	} else if strings.Contains(osInfo, "ID=fedora") || strings.Contains(osInfo, "ID=rhel") || strings.Contains(osInfo, "ID_LIKE=\"rhel fedora\"") {
-		installCmd = append([]string{"dnf", "install", "-y"}, packages...)
-	} else if strings.Contains(osInfo, "ID=centos") {
-		installCmd = append([]string{"yum", "install", "-y"}, packages...)
-	} else if strings.Contains(osInfo, "ID=opensuse") || strings.Contains(osInfo, "ID_LIKE=\"suse\"") {
-		installCmd = append([]string{"zypper", "install", "-y"}, packages...)
-	} else if strings.Contains(osInfo, "ID=alpine") {
-		installCmd = append([]string{"apk", "add"}, packages...)
-	} else {
-		// Unknown OS, skip installation
+	if len(packages) == 0 {
 		return
 	}
 
 	fmt.Printf("Installing performance tools (%s)...\n", strings.Join(packages, ", "))
 
-	cmd := exec.Command("sudo", installCmd...)
+	var cmd *exec.Cmd
+	if os.Geteuid() == 0 {
+		cmd = exec.Command(osInfo.InstallCmd[0], append(osInfo.InstallCmd[1:], packages...)...)
+	} else {
+		cmd = exec.Command("sudo", append(osInfo.InstallCmd, packages...)...)
+	}
+
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
@@ -200,6 +324,11 @@ func extractBaseSystem(targetDir, cachePath string) error {
 }
 
 func Initialize(path string, shell string) (*Environment, error) {
+	// Ensure all required dependencies are installed
+	if err := ensureDependencies(); err != nil {
+		return nil, fmt.Errorf("dependency check failed: %w", err)
+	}
+
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return nil, fmt.Errorf("get absolute path: %w", err)
