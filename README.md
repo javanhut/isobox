@@ -27,9 +27,11 @@ IsoBox creates a **completely isolated Linux environment** in a `.isobox` direct
 - **Full Linux Filesystem**: Standard `/bin`, `/lib`, `/etc`, `/usr` structure
 - **Self-Contained**: All binaries and libraries installed automatically
 - **POSIX Compliant**: 150+ Unix commands via BusyBox
-- **Package Management**: Install Alpine Linux packages inside the environment
+- **Pure Go Package Manager**: No shell scripts, single binary installation
+- **Batch Package Installation**: Define dependencies in TOML configuration files
+- **Automatic Dependency Resolution**: Recursively installs all package dependencies
 - **Per-Directory**: Each project gets its own isolated environment
-- **Automatic Dependencies**: musl libc and SSL libraries installed automatically
+- **Package Name Aliases**: Use familiar names (nvim → neovim, python → python3)
 - **Multiple Shells**: Choose between bash, zsh, or sh as your default shell
 
 ## How It Works
@@ -70,9 +72,7 @@ cd isobox
 make install
 ```
 
-This installs:
-- Binary to `/usr/local/bin/isobox`
-- Scripts to `/usr/local/share/isobox/scripts/`
+This installs the single `isobox` binary to `/usr/local/bin/isobox`.
 
 To uninstall:
 ```bash
@@ -93,6 +93,9 @@ isobox init
 # Or initialize with a specific shell (bash, zsh, or sh)
 isobox init --shell zsh
 
+# Or initialize with pre-configured dependencies
+isobox init --install-dep dependencies.toml
+
 # Enter the isolated environment (uses sudo chroot)
 isobox enter
 
@@ -112,18 +115,45 @@ bin  boot  dev  etc  home  lib  lib64  mnt  opt  proc  root  run  sbin  srv  sys
 # Back to host system
 ```
 
+### Using Dependencies Configuration
+
+Create a `dependencies.toml` file to define all packages you need:
+
+```toml
+[packages]
+dev = ["git", "python3", "py3-pip", "gcc", "make"]
+network = ["curl", "wget"]
+
+[options]
+install_dev = true
+install_network = true
+```
+
+Then initialize with dependencies:
+
+```bash
+isobox init --install-dep dependencies.toml
+```
+
+This will create the environment and install all specified packages automatically.
+
 ## Commands
 
 ### Host Commands
 
 ```bash
-isobox init [path] [--shell <shell>]  # Initialize isolated environment (shells: bash, zsh, sh)
-isobox enter                           # Enter isolated environment (uses sudo chroot)
-isobox exec <cmd>                      # Execute command in isolation (uses sudo chroot)
-isobox migrate <src> <dest>            # Copy directory from host to isobox
-isobox recache                         # Delete and rebuild the base system cache
-isobox status                          # Show environment status
-isobox destroy                         # Remove isolated environment (uses sudo)
+isobox init [path] [--shell <shell>] [--install-dep <file.toml>]
+                                        # Initialize isolated environment (shells: bash, zsh, sh)
+isobox enter                            # Enter isolated environment (uses sudo chroot)
+isobox exec <cmd>                       # Execute command in isolation (uses sudo chroot)
+isobox migrate <src> <dest>             # Copy directory from host to isobox
+isobox pkg install <package>            # Install package from host
+isobox pkg install-deps <file.toml>     # Install packages from dependencies file
+isobox pkg remove <package>             # Remove package from host
+isobox pkg list                         # List installed packages
+isobox recache                          # Delete and rebuild the base system cache
+isobox status                           # Show environment status
+isobox destroy                          # Remove isolated environment (uses sudo)
 ```
 
 ### Inside Environment Commands
@@ -321,10 +351,19 @@ isobox enter
 
 ### How It Works
 
-1. Packages are downloaded from Alpine Linux v3.19 repositories
-2. Automatically installs required dependencies (pcre2, zlib, etc.)
-3. Extracts packages directly into the isolated filesystem
-4. All files stay within `.isobox/` - completely isolated from host
+The package manager is a statically-linked Go binary with no external dependencies:
+
+1. **Auto-detection**: Binary detects if running inside IsoBox environment
+2. **Repository search**: Searches Alpine Linux v3.18 main and community repos
+3. **Dependency resolution**: Automatically parses and installs all dependencies
+4. **Pure Go extraction**: Directly extracts tar.gz packages to filesystem
+5. **Complete isolation**: All packages install to `.isobox/` only
+
+Key features:
+- Package name aliases (nvim → neovim, python → python3)
+- Batch installation via `dependencies.toml` files
+- Circular dependency prevention
+- JSON-based package tracking
 
 ## Understanding Chroot
 
@@ -419,17 +458,25 @@ The init process automatically installs musl libc and common libraries.
 ### Package manager not working
 
 If the internal package manager (`isobox install`) doesn't work inside the environment:
-```bash
-# Rebuild the base system cache
-isobox recache
 
-# Then destroy and reinitialize your environment
-cd ~/myproject
+**Binary not executable:**
+```bash
+# Check if binary exists
+ls -la .isobox/bin/isobox
+
+# If missing or wrong permissions:
 isobox destroy
 isobox init
 ```
 
-This ensures the `isobox` script is properly installed in `/bin/isobox` inside the environment.
+**Library errors:**
+The `isobox` binary is statically linked and should work without any libraries. If you see "cannot execute: required file not found", rebuild with:
+```bash
+cd /path/to/isobox/source
+make install
+```
+
+This ensures the statically-linked binary is properly installed.
 
 ### BusyBox not found
 

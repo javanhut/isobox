@@ -12,6 +12,13 @@ import (
 )
 
 func main() {
+	// Check if running inside an IsoBox environment
+	if isInsideIsoBox() {
+		handleInternalCommands()
+		return
+	}
+
+	// Running on host system
 	if len(os.Args) < 2 {
 		printUsage()
 		os.Exit(1)
@@ -43,12 +50,84 @@ func main() {
 	}
 }
 
+// isInsideIsoBox checks if we're running inside an isolated environment
+func isInsideIsoBox() bool {
+	// Check for the IsoBox marker file
+	if _, err := os.Stat("/config.json"); err == nil {
+		return true
+	}
+
+	// Check /etc/os-release for IsoBox signature
+	if data, err := os.ReadFile("/etc/os-release"); err == nil {
+		return strings.Contains(string(data), "ID=isobox")
+	}
+
+	return false
+}
+
+// handleInternalCommands handles commands when running inside IsoBox environment
+func handleInternalCommands() {
+	if len(os.Args) < 2 {
+		printInternalUsage()
+		os.Exit(1)
+	}
+
+	command := os.Args[1]
+
+	// Package manager for internal use (already inside the isolated environment)
+	pm := ipkg.NewInternalPackageManager()
+
+	switch command {
+	case "install":
+		if len(os.Args) < 3 {
+			fmt.Println("Usage: isobox install <package>")
+			os.Exit(1)
+		}
+		if err := pm.Install(os.Args[2]); err != nil {
+			log.Fatalf("Failed to install package: %v", err)
+		}
+	case "remove":
+		if len(os.Args) < 3 {
+			fmt.Println("Usage: isobox remove <package>")
+			os.Exit(1)
+		}
+		if err := pm.Remove(os.Args[2]); err != nil {
+			log.Fatalf("Failed to remove package: %v", err)
+		}
+	case "list":
+		if err := pm.List(); err != nil {
+			log.Fatalf("Failed to list packages: %v", err)
+		}
+	case "update":
+		if err := pm.Update(); err != nil {
+			log.Fatalf("Failed to update package index: %v", err)
+		}
+	case "help", "--help", "-h":
+		printInternalUsage()
+	default:
+		fmt.Printf("Unknown command: %s\n", command)
+		printInternalUsage()
+		os.Exit(1)
+	}
+}
+
+func printInternalUsage() {
+	fmt.Println("IsoBox Internal Package Manager")
+	fmt.Println("\nUsage:")
+	fmt.Println("  isobox install <package>    Install a package")
+	fmt.Println("  isobox remove <package>     Remove a package")
+	fmt.Println("  isobox list                 List installed packages")
+	fmt.Println("  isobox update               Update package index")
+	fmt.Println("  isobox help                 Show this help")
+}
+
 func printUsage() {
 	fmt.Println("IsoBox - Isolated Linux Development Environment")
 	fmt.Println("\nUsage:")
-	fmt.Println("  isobox init [path] [--shell <shell>]")
+	fmt.Println("  isobox init [path] [options]")
 	fmt.Println("                                Initialize isolated environment in directory (default: current)")
-	fmt.Println("                                Available shells: bash (default), zsh, sh")
+	fmt.Println("    --shell <shell>             Set default shell (bash, zsh, or sh)")
+	fmt.Println("    --install-dep <file.toml>   Install packages from dependencies file")
 	fmt.Println("  isobox enter                  Enter the isolated environment shell")
 	fmt.Println("  isobox exec <cmd>             Execute command in isolated environment")
 	fmt.Println("  isobox migrate <src> <dest>   Copy directory from host to isobox")
@@ -60,6 +139,8 @@ func printUsage() {
 	fmt.Println("  isobox pkg remove <pkg>       Remove a package from the environment")
 	fmt.Println("  isobox pkg list               List installed packages")
 	fmt.Println("  isobox pkg update             Update package index")
+	fmt.Println("  isobox pkg install-deps <file.toml>")
+	fmt.Println("                                Install packages from dependencies file")
 	fmt.Println("\nPackage Management (inside environment after 'isobox enter'):")
 	fmt.Println("  isobox install <pkg>          Install a package")
 	fmt.Println("  isobox remove <pkg>           Remove a package")
@@ -70,6 +151,7 @@ func printUsage() {
 func handleInit() {
 	path := "."
 	shell := "bash"
+	var depsFile string
 
 	for i := 2; i < len(os.Args); i++ {
 		arg := os.Args[i]
@@ -83,6 +165,13 @@ func handleInit() {
 				fmt.Printf("Error: Invalid shell '%s'. Must be one of: bash, zsh, sh\n", shell)
 				os.Exit(1)
 			}
+			i++
+		} else if arg == "--install-dep" {
+			if i+1 >= len(os.Args) {
+				fmt.Println("Error: --install-dep requires a file path")
+				os.Exit(1)
+			}
+			depsFile = os.Args[i+1]
 			i++
 		} else if !strings.HasPrefix(arg, "--") {
 			path = arg
@@ -99,6 +188,16 @@ func handleInit() {
 	fmt.Printf("\nIsoBox environment created successfully!\n")
 	fmt.Printf("Location: %s\n", env.Root)
 	fmt.Printf("Shell: %s\n", env.Shell)
+
+	// Install dependencies if specified
+	if depsFile != "" {
+		fmt.Printf("\nInstalling dependencies from %s...\n", depsFile)
+		pm := ipkg.NewPackageManager(env.Root)
+		if err := pm.InstallFromConfig(depsFile); err != nil {
+			fmt.Printf("Warning: Failed to install all dependencies: %v\n", err)
+		}
+	}
+
 	fmt.Printf("\nTo enter the environment, run:\n")
 	fmt.Printf("  cd %s && isobox enter\n", path)
 }
@@ -207,7 +306,7 @@ func handlePackage() {
 	}
 
 	if len(os.Args) < 3 {
-		fmt.Println("Usage: isobox pkg [install|remove|list|update] [args...]")
+		fmt.Println("Usage: isobox pkg [install|remove|list|update|install-deps] [args...]")
 		os.Exit(1)
 	}
 
@@ -238,6 +337,14 @@ func handlePackage() {
 	case "update":
 		if err := pm.Update(); err != nil {
 			log.Fatalf("Failed to update package index: %v", err)
+		}
+	case "install-deps":
+		if len(os.Args) < 4 {
+			fmt.Println("Usage: isobox pkg install-deps <dependencies.toml>")
+			os.Exit(1)
+		}
+		if err := pm.InstallFromConfig(os.Args[3]); err != nil {
+			log.Fatalf("Failed to install dependencies: %v", err)
 		}
 	default:
 		fmt.Printf("Unknown pkg subcommand: %s\n", subcommand)

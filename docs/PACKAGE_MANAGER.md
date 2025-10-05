@@ -1,18 +1,20 @@
-# IsoBox Internal Package Manager
+# IsoBox Package Manager
 
-The IsoBox package manager runs **inside** the isolated environment and installs packages from Alpine Linux repositories. All package management happens from within the chroot environment, not from the host system.
+The IsoBox package manager installs packages from Alpine Linux repositories into isolated environments.
 
 ## Overview
 
-The package manager is a shell script (`/bin/isobox`) that runs inside each isolated environment. It downloads Alpine Linux packages and extracts them directly into the isolated filesystem.
+The package manager is implemented in pure Go and downloads Alpine Linux packages, extracts them directly into the isolated filesystem, and tracks installed packages.
 
 **Key Features:**
-- Runs inside the isolated environment
+- Pure Go implementation (no shell scripts required)
 - Installs packages from Alpine Linux v3.18 repositories
 - **Automatic dependency resolution** - Recursively installs all package dependencies
+- **Batch installation via TOML configuration** - Define dependencies in a file
 - Per-environment package isolation
 - Simple JSON-based package tracking
 - Supports both main and community repositories
+- Package name aliases (nvim → neovim, python → python3, etc.)
 
 ## Basic Usage
 
@@ -81,6 +83,98 @@ This displays information about updating the package index.
 (isobox) # isobox help
 ```
 
+## Batch Package Installation with dependencies.toml
+
+You can define all your environment's dependencies in a TOML configuration file and install them in batch.
+
+### Create a dependencies.toml File
+
+```toml
+# dependencies.toml
+[packages]
+# Core development tools
+dev = ["git", "vim", "neovim", "python3", "go", "gcc", "make"]
+
+# Shells
+shells = ["bash", "zsh"]
+
+# Network tools
+network = ["curl", "wget", "openssh-client"]
+
+# System utilities
+utils = ["htop", "tmux", "jq"]
+
+# Custom packages
+custom = []
+
+[options]
+# Control which package groups to install
+install_dev = true
+install_shells = true
+install_network = false
+install_utils = false
+install_custom = false
+```
+
+### Install During Initialization
+
+Install packages automatically when creating a new environment:
+
+```bash
+isobox init --install-dep dependencies.toml
+```
+
+This will:
+1. Create the isolated environment
+2. Install all packages defined in the TOML file
+3. Resolve and install all dependencies automatically
+
+### Install in Existing Environment
+
+From the host system:
+
+```bash
+cd ~/myproject
+isobox pkg install-deps dependencies.toml
+```
+
+### Package Name Aliases
+
+The package manager supports common aliases that map to Alpine package names:
+
+- `nvim` → `neovim`
+- `vim` → `vim`
+- `python` → `python3`
+- `py` → `python3`
+- `pip` → `py3-pip`
+
+You can use either the alias or the actual package name in your dependencies.toml.
+
+### Example Workflow
+
+```bash
+# Create dependencies.toml for a Python project
+cat > dependencies.toml << 'EOF'
+[packages]
+dev = ["git", "python3", "py3-pip", "gcc", "musl-dev"]
+utils = ["curl", "jq"]
+
+[options]
+install_dev = true
+install_utils = true
+EOF
+
+# Initialize environment with dependencies
+isobox init myproject --install-dep dependencies.toml
+
+# Enter the environment
+cd myproject && isobox enter
+
+# Packages are already installed and ready to use
+(isobox) python3 --version
+(isobox) git --version
+```
+
 ## How It Works
 
 ### Package Sources
@@ -99,14 +193,33 @@ Alpine packages are used because:
 
 ### Installation Process
 
-1. **Check if installed**: Query the package database
-2. **Search repositories**: Look in main repo, then community repo if not found
-3. **Download package**: Fetch .apk file using wget or curl
-4. **Read dependencies**: Extract .PKGINFO from APK to identify dependencies
-5. **Install dependencies recursively**: Automatically install all required packages
-6. **Extract package**: Unpack directly to `/` (which is the isolated root)
-7. **Update database**: Add package entry to `/var/lib/ipkg/installed.json`
-8. **Cleanup**: Remove downloaded .apk file
+The package manager is implemented in pure Go with no external dependencies:
+
+1. **Check if installed**: Query the package database (`/var/lib/ipkg/installed.json`)
+2. **Resolve package aliases**: Map common names (nvim → neovim, python → python3)
+3. **Search repositories**:
+   - Fetch HTML index from Alpine main repository
+   - If not found, search community repository
+   - Use regex pattern matching to find package file
+4. **Download package**: HTTP GET request to download .apk file
+5. **Parse dependencies**:
+   - Open .apk as gzip-compressed tar archive
+   - Extract `.PKGINFO` file
+   - Parse `depend =` lines
+   - Filter out invalid dependencies (cmd:, pc:, absolute paths)
+   - Map shared library dependencies (so:*) to package names
+6. **Install dependencies recursively**:
+   - Check circular dependency prevention map
+   - Install each dependency before the main package
+7. **Extract package**:
+   - Read .apk as tar.gz archive
+   - Extract files directly to root filesystem
+   - Create directories, regular files, and symlinks
+   - Skip metadata files (.*)
+8. **Update database**: Add package entry with name, version, and timestamp
+9. **Cleanup**: Remove downloaded .apk file from cache
+
+All extraction and parsing is done in pure Go using the standard library's `archive/tar`, `compress/gzip`, and `net/http` packages.
 
 ### Automatic Dependency Installation
 
@@ -162,21 +275,23 @@ This is inside the isolated environment, so from the host it's at `.isobox/var/l
 
 ## Environment-Specific Packages
 
-Each IsoBox environment has its own package manager and database:
+Each IsoBox environment has its own isolated package manager and database:
 
 ```
 project-a/
 └── .isobox/
-    ├── bin/isobox              # Package manager script
+    ├── bin/isobox              # Statically-linked isobox binary
     └── var/lib/ipkg/
         └── installed.json      # Contains: git, vim
 
 project-b/
 └── .isobox/
-    ├── bin/isobox              # Separate package manager
+    ├── bin/isobox              # Same binary, different database
     └── var/lib/ipkg/
         └── installed.json      # Contains: python3, curl
 ```
+
+The `isobox` binary automatically detects when it's running inside an isolated environment (by checking `/etc/os-release` for `ID=isobox`) and operates on the local package database.
 
 Installing packages in `project-a` doesn't affect `project-b`.
 
@@ -935,8 +1050,9 @@ isobox enter
 | Dependencies | **Auto** | Auto | Auto | Auto | Auto |
 | Database | JSON | SQLite | dpkg | package.json | Metadata |
 | Size | Tiny | Small | Large | Medium | Medium |
-| Language | Shell | C | C | JavaScript | Python |
+| Language | **Go** | C | C | JavaScript | Python |
 | Verification | None | GPG | GPG | SHA | SHA |
+| Static Binary | **Yes** | No | No | No | No |
 
 IsoBox package manager is designed for simplicity and environment isolation, not as a replacement for full-featured system package managers.
 
@@ -944,24 +1060,63 @@ IsoBox package manager is designed for simplicity and environment isolation, not
 
 Planned improvements:
 
-1. ~~**Full dependency resolution** - Automatically install all required packages~~ ✓ **Completed**
-2. **GPG verification** - Verify package signatures
-3. **Version pinning** - Install specific package versions
-4. **Package search** - Built-in search: `isobox search <term>`
-5. **Clean removal** - Delete files on `isobox remove`
-6. **Upgrade command** - `isobox upgrade <package>`
-7. **List available** - Show all available packages
-8. **Package info** - Display package details
-9. **Multiple architectures** - Support ARM, ARM64
-10. **Custom repositories** - Add non-Alpine repositories
+1. ~~**Full dependency resolution** - Automatically install all required packages~~ **Completed**
+2. ~~**Package name aliases** - Map common names to Alpine packages~~ **Completed**
+3. ~~**Batch installation** - Install packages from configuration files~~ **Completed**
+4. **GPG verification** - Verify package signatures
+5. **Version pinning** - Install specific package versions
+6. **Package search** - Built-in search: `isobox search <term>`
+7. **Clean removal** - Delete files on `isobox remove`
+8. **Upgrade command** - `isobox upgrade <package>`
+9. **List available** - Show all available packages
+10. **Package info** - Display package details
+11. **Multiple architectures** - Support ARM, ARM64
+12. **Custom repositories** - Add non-Alpine repositories
+
+## Technical Implementation
+
+The package manager is implemented in pure Go with the following architecture:
+
+### Core Components
+
+- **`pkg/ipkg/manager.go`**: Main package manager implementation
+  - Repository searching and package discovery
+  - HTTP-based package downloads
+  - Tar/gzip archive extraction
+  - Dependency parsing and resolution
+  - JSON database management
+
+- **`pkg/ipkg/dependencies.go`**: TOML configuration support
+  - Parse dependencies.toml files
+  - Batch package installation
+  - Group-based package management
+
+### Key Features
+
+**Statically Linked Binary:**
+- Built with `CGO_ENABLED=0` for static compilation
+- No external dependencies required
+- Works in minimal environments (musl libc compatible)
+- Single ~8-10MB binary includes all functionality
+
+**Auto-Detection:**
+- Detects when running inside IsoBox by checking `/etc/os-release`
+- Automatically switches between host mode and internal mode
+- Uses different root paths depending on context
+
+**Pure Go Implementation:**
+- No shell script dependencies
+- Standard library only (`archive/tar`, `compress/gzip`, `net/http`)
+- TOML parsing via `github.com/BurntSushi/toml`
 
 ## Contributing
 
 To improve the package manager:
 
-1. Edit `scripts/isobox-internal.sh` (source script)
-2. Test in a clean environment
-3. Update this documentation
-4. Submit a pull request
+1. Edit source files in `pkg/ipkg/` directory
+2. Build with `make build` (creates static binary)
+3. Test in a clean environment
+4. Update this documentation
+5. Submit a pull request
 
-The script is installed to `.isobox/bin/isobox` during `isobox init`.
+The binary is automatically copied to `.isobox/bin/isobox` during `isobox init`.

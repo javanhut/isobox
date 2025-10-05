@@ -91,10 +91,6 @@ func buildBaseSystem(cachePath string) error {
 		return err
 	}
 
-	if err := tmpEnv.setupInternalPackageManager(); err != nil {
-		return err
-	}
-
 	if err := tmpEnv.setupShells(); err != nil {
 		fmt.Printf("  Warning: Shell setup failed: %v\n", err)
 	}
@@ -254,6 +250,10 @@ func Initialize(path string, shell string) (*Environment, error) {
 	}
 
 	if err := env.createEssentialFiles(); err != nil {
+		return nil, err
+	}
+
+	if err := env.setupInternalPackageManager(); err != nil {
 		return nil, err
 	}
 
@@ -1067,27 +1067,6 @@ func (e *Environment) setupLdConfig() error {
 	return os.WriteFile(ldSoConf, []byte(content), 0644)
 }
 
-func (e *Environment) setupInternalPackageManager() error {
-	fmt.Println("\nSetting up internal package manager...")
-
-	scriptPath := findInternalScript()
-	if scriptPath == "" {
-		return fmt.Errorf("internal package manager script not found (isobox-internal.sh)")
-	}
-
-	destPath := filepath.Join(e.IsoboxDir, "bin/isobox")
-
-	if err := copyBinary(scriptPath, destPath); err != nil {
-		return fmt.Errorf("copy isobox script: %w", err)
-	}
-
-	if err := os.Chmod(destPath, 0755); err != nil {
-		return fmt.Errorf("chmod isobox script: %w", err)
-	}
-
-	fmt.Println("  Installed: /bin/isobox (internal package manager)")
-	return nil
-}
 
 func (e *Environment) setupShells() error {
 	fmt.Println("\nSetting up shells (bash, zsh, sh)...")
@@ -1110,37 +1089,6 @@ func (e *Environment) setupShells() error {
 	return nil
 }
 
-func findInternalScript() string {
-	searchPaths := []string{}
-
-	// System installation paths (checked first)
-	searchPaths = append(searchPaths, "/usr/local/share/isobox/scripts/isobox-internal.sh")
-	searchPaths = append(searchPaths, "/usr/share/isobox/scripts/isobox-internal.sh")
-
-	// Executable directory (for local builds)
-	if exePath, err := os.Executable(); err == nil {
-		exeDir := filepath.Dir(exePath)
-		searchPaths = append(searchPaths, filepath.Join(exeDir, "scripts/isobox-internal.sh"))
-	}
-
-	// Working directory (for development)
-	if workingDir, err := os.Getwd(); err == nil {
-		searchPaths = append(searchPaths, filepath.Join(workingDir, "scripts/isobox-internal.sh"))
-
-		gitRoot := findGitRoot(workingDir)
-		if gitRoot != "" {
-			searchPaths = append(searchPaths, filepath.Join(gitRoot, "scripts/isobox-internal.sh"))
-		}
-	}
-
-	for _, path := range searchPaths {
-		if _, err := os.Stat(path); err == nil {
-			return path
-		}
-	}
-
-	return ""
-}
 
 func findGitRoot(startDir string) string {
 	dir := startDir
@@ -1288,6 +1236,29 @@ services:   files
 	fmt.Println("  Created: /etc/hosts, /etc/resolv.conf, /etc/nsswitch.conf")
 	fmt.Println("  Created: /etc/bash.bashrc, /etc/profile, /etc/os-release")
 
+	return nil
+}
+
+func (e *Environment) setupInternalPackageManager() error {
+	fmt.Println("\nSetting up internal package manager...")
+
+	// Get the current executable path
+	exePath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("get executable path: %w", err)
+	}
+
+	// Copy isobox binary into the environment
+	destPath := filepath.Join(e.IsoboxDir, "bin/isobox")
+	if err := copyBinary(exePath, destPath); err != nil {
+		return fmt.Errorf("copy isobox binary: %w", err)
+	}
+
+	if err := os.Chmod(destPath, 0755); err != nil {
+		return fmt.Errorf("chmod isobox binary: %w", err)
+	}
+
+	fmt.Println("  Installed: /bin/isobox (internal package manager)")
 	return nil
 }
 
