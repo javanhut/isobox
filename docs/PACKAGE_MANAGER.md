@@ -1,18 +1,20 @@
-# IsoBox Internal Package Manager
+# IsoBox Package Manager
 
-The IsoBox package manager runs **inside** the isolated environment and installs packages from Alpine Linux repositories. All package management happens from within the chroot environment, not from the host system.
+The IsoBox package manager installs packages from Alpine Linux repositories into isolated environments.
 
 ## Overview
 
-The package manager is a shell script (`/bin/isobox`) that runs inside each isolated environment. It downloads Alpine Linux packages and extracts them directly into the isolated filesystem.
+The package manager is implemented in pure Go and downloads Alpine Linux packages, extracts them directly into the isolated filesystem, and tracks installed packages.
 
 **Key Features:**
-- Runs inside the isolated environment
-- Installs packages from Alpine Linux v3.19 repositories
-- Automatic dependency installation for common libraries
+- Pure Go implementation (no shell scripts required)
+- Installs packages from Alpine Linux v3.18 repositories
+- **Automatic dependency resolution** - Recursively installs all package dependencies
+- **Batch installation via TOML configuration** - Define dependencies in a file
 - Per-environment package isolation
 - Simple JSON-based package tracking
 - Supports both main and community repositories
+- Package name aliases (nvim → neovim, python → python3, etc.)
 
 ## Basic Usage
 
@@ -81,14 +83,106 @@ This displays information about updating the package index.
 (isobox) # isobox help
 ```
 
+## Batch Package Installation with dependencies.toml
+
+You can define all your environment's dependencies in a TOML configuration file and install them in batch.
+
+### Create a dependencies.toml File
+
+```toml
+# dependencies.toml
+[packages]
+# Core development tools
+dev = ["git", "vim", "neovim", "python3", "go", "gcc", "make"]
+
+# Shells
+shells = ["bash", "zsh"]
+
+# Network tools
+network = ["curl", "wget", "openssh-client"]
+
+# System utilities
+utils = ["htop", "tmux", "jq"]
+
+# Custom packages
+custom = []
+
+[options]
+# Control which package groups to install
+install_dev = true
+install_shells = true
+install_network = false
+install_utils = false
+install_custom = false
+```
+
+### Install During Initialization
+
+Install packages automatically when creating a new environment:
+
+```bash
+isobox init --install-dep dependencies.toml
+```
+
+This will:
+1. Create the isolated environment
+2. Install all packages defined in the TOML file
+3. Resolve and install all dependencies automatically
+
+### Install in Existing Environment
+
+From the host system:
+
+```bash
+cd ~/myproject
+isobox pkg install-deps dependencies.toml
+```
+
+### Package Name Aliases
+
+The package manager supports common aliases that map to Alpine package names:
+
+- `nvim` → `neovim`
+- `vim` → `vim`
+- `python` → `python3`
+- `py` → `python3`
+- `pip` → `py3-pip`
+
+You can use either the alias or the actual package name in your dependencies.toml.
+
+### Example Workflow
+
+```bash
+# Create dependencies.toml for a Python project
+cat > dependencies.toml << 'EOF'
+[packages]
+dev = ["git", "python3", "py3-pip", "gcc", "musl-dev"]
+utils = ["curl", "jq"]
+
+[options]
+install_dev = true
+install_utils = true
+EOF
+
+# Initialize environment with dependencies
+isobox init myproject --install-dep dependencies.toml
+
+# Enter the environment
+cd myproject && isobox enter
+
+# Packages are already installed and ready to use
+(isobox) python3 --version
+(isobox) git --version
+```
+
 ## How It Works
 
 ### Package Sources
 
-The package manager uses Alpine Linux v3.19 repositories:
+The package manager uses Alpine Linux v3.18 repositories:
 
-**Main Repository:** https://dl-cdn.alpinelinux.org/alpine/v3.19/main/x86_64/
-**Community Repository:** https://dl-cdn.alpinelinux.org/alpine/v3.19/community/x86_64/
+**Main Repository:** https://dl-cdn.alpinelinux.org/alpine/v3.18/main/x86_64/
+**Community Repository:** https://dl-cdn.alpinelinux.org/alpine/v3.18/community/x86_64/
 
 Alpine packages are used because:
 - **Small size**: Built with musl libc (smaller than glibc)
@@ -99,13 +193,33 @@ Alpine packages are used because:
 
 ### Installation Process
 
-1. **Check if installed**: Query the package database
-2. **Search repositories**: Look in main repo, then community repo if not found
-3. **Download package**: Fetch .apk file using wget or curl
-4. **Extract package**: Unpack directly to `/` (which is the isolated root)
-5. **Install dependencies**: Auto-install pcre2 and zlib on first package install
-6. **Update database**: Add package entry to `/var/lib/ipkg/installed.json`
-7. **Cleanup**: Remove downloaded .apk file
+The package manager is implemented in pure Go with no external dependencies:
+
+1. **Check if installed**: Query the package database (`/var/lib/ipkg/installed.json`)
+2. **Resolve package aliases**: Map common names (nvim → neovim, python → python3)
+3. **Search repositories**:
+   - Fetch HTML index from Alpine main repository
+   - If not found, search community repository
+   - Use regex pattern matching to find package file
+4. **Download package**: HTTP GET request to download .apk file
+5. **Parse dependencies**:
+   - Open .apk as gzip-compressed tar archive
+   - Extract `.PKGINFO` file
+   - Parse `depend =` lines
+   - Filter out invalid dependencies (cmd:, pc:, absolute paths)
+   - Map shared library dependencies (so:*) to package names
+6. **Install dependencies recursively**:
+   - Check circular dependency prevention map
+   - Install each dependency before the main package
+7. **Extract package**:
+   - Read .apk as tar.gz archive
+   - Extract files directly to root filesystem
+   - Create directories, regular files, and symlinks
+   - Skip metadata files (.*)
+8. **Update database**: Add package entry with name, version, and timestamp
+9. **Cleanup**: Remove downloaded .apk file from cache
+
+All extraction and parsing is done in pure Go using the standard library's `archive/tar`, `compress/gzip`, and `net/http` packages.
 
 ### Automatic Dependency Installation
 
@@ -118,10 +232,22 @@ During initialization (`isobox init`), the following are automatically installed
 - zlib (compression library)
 - pcre2 (regex library)
 - libidn2 and libunistring (internationalization)
+- ncurses libraries (libncursesw, libformw, libmenuw, libpanelw)
+- readline (command-line editing)
+- libacl and libattr (ACL support)
+- oniguruma (regex engine)
+- libcap (capability support)
+- s6 and skalibs (process supervision)
+- utmps-libs (utmp/wtmp handling)
 
 **Tools:**
 - BusyBox (150+ Unix commands)
 - Alpine wget (SSL-capable for package downloads)
+- bash and zsh shells
+- python3 (Python 3 interpreter)
+- gcc (C compiler)
+- go (Go programming language)
+- vim (text editor)
 
 When you install your first package, the package manager also installs common dependencies (pcre2, zlib) if not already marked as installed.
 
@@ -149,21 +275,23 @@ This is inside the isolated environment, so from the host it's at `.isobox/var/l
 
 ## Environment-Specific Packages
 
-Each IsoBox environment has its own package manager and database:
+Each IsoBox environment has its own isolated package manager and database:
 
 ```
 project-a/
 └── .isobox/
-    ├── bin/isobox              # Package manager script
+    ├── bin/isobox              # Statically-linked isobox binary
     └── var/lib/ipkg/
         └── installed.json      # Contains: git, vim
 
 project-b/
 └── .isobox/
-    ├── bin/isobox              # Separate package manager
+    ├── bin/isobox              # Same binary, different database
     └── var/lib/ipkg/
         └── installed.json      # Contains: python3, curl
 ```
+
+The `isobox` binary automatically detects when it's running inside an isolated environment (by checking `/etc/os-release` for `ID=isobox`) and operates on the local package database.
 
 Installing packages in `project-a` doesn't affect `project-b`.
 
@@ -189,19 +317,23 @@ Installing packages in `project-a` doesn't affect `project-b`.
 
 ### Text Editors
 
+Note: vim is pre-installed in all environments.
+
 ```bash
-(isobox) # isobox install vim
+(isobox) # vim --version        # Already available
 (isobox) # isobox install nano
 (isobox) # isobox install emacs
 ```
 
 ### Programming Languages
 
+Note: python3 and go are pre-installed in all environments.
+
 ```bash
-(isobox) # isobox install python3
+(isobox) # python3 --version   # Already available
+(isobox) # go version           # Already available
 (isobox) # isobox install nodejs
 (isobox) # isobox install ruby
-(isobox) # isobox install go
 ```
 
 ### Text Processing
@@ -215,8 +347,10 @@ Installing packages in `project-a` doesn't affect `project-b`.
 
 ### Build Tools
 
+Note: gcc is pre-installed in all environments.
+
 ```bash
-(isobox) # isobox install gcc
+(isobox) # gcc --version        # Already available
 (isobox) # isobox install g++
 (isobox) # isobox install make
 (isobox) # isobox install cmake
@@ -234,15 +368,18 @@ cd ~/myproject
 isobox init
 isobox enter
 
-# Inside environment
+# Inside environment - vim, gcc, python3, go are pre-installed
+(isobox) # vim --version
+(isobox) # gcc --version
+(isobox) # python3 --version
+(isobox) # go version
+
+# Install additional tools
 (isobox) # isobox install git
-(isobox) # isobox install vim
 (isobox) # isobox install make
-(isobox) # isobox install gcc
 
 # Use the tools
 (isobox) # git --version
-(isobox) # vim --version
 (isobox) # exit
 ```
 
@@ -255,8 +392,8 @@ cd ~/build-env
 isobox init
 isobox enter
 
-# Inside environment
-(isobox) # isobox install gcc
+# Inside environment - gcc is pre-installed
+(isobox) # gcc --version
 (isobox) # isobox install make
 (isobox) # isobox install cmake
 (isobox) # isobox install git
@@ -272,11 +409,10 @@ cd ~/pyproject
 isobox init
 isobox enter
 
-# Inside environment
-(isobox) # isobox install python3
+# Inside environment - python3 and gcc are pre-installed
+(isobox) # python3 --version
 (isobox) # isobox install py3-pip
 (isobox) # isobox install python3-dev
-(isobox) # python3 --version
 (isobox) # pip --version
 (isobox) # exit
 ```
@@ -307,13 +443,13 @@ https://pkgs.alpinelinux.org/packages
 
 Search for a specific package:
 ```
-https://pkgs.alpinelinux.org/packages?name=<package>&branch=v3.19
+https://pkgs.alpinelinux.org/packages?name=<package>&branch=v3.18
 ```
 
 Examples:
-- https://pkgs.alpinelinux.org/packages?name=git&branch=v3.19
-- https://pkgs.alpinelinux.org/packages?name=python3&branch=v3.19
-- https://pkgs.alpinelinux.org/packages?name=nodejs&branch=v3.19
+- https://pkgs.alpinelinux.org/packages?name=git&branch=v3.18
+- https://pkgs.alpinelinux.org/packages?name=python3&branch=v3.18
+- https://pkgs.alpinelinux.org/packages?name=nodejs&branch=v3.18
 
 ## Repository Search Order
 
@@ -348,45 +484,82 @@ Successfully installed nodejs
 
 ## Dependency Management
 
-### Automatic Dependencies
+### Automatic Dependency Resolution
 
-The package manager automatically handles:
+The package manager now **automatically resolves and installs all dependencies**. When you install a package, it:
+
+1. Downloads the package
+2. Extracts the `.PKGINFO` file to read dependencies
+3. Recursively installs each dependency before installing the main package
+4. Skips already-installed packages to avoid duplicates
+5. Prevents circular dependency loops
+
+**Example:**
+```bash
+(isobox) # isobox install git
+Installing git (host: Arch Linux)...
+Resolving dependencies...
+  Resolving dependencies for git...
+  Installing dependency: pcre2
+  Installing dependency: zlib
+  Installing dependency: libcurl
+  Resolving dependencies for libcurl...
+  Installing dependency: nghttp2-libs
+  Installing dependency: libssl3
+  ...
+  Installing git...
+Successfully installed git and its dependencies
+```
+
+### Base System Dependencies
 
 **During `isobox init`:**
 - musl libc (required for all Alpine packages)
 - SSL libraries (libssl3, libcrypto3)
 - CA certificates (ca-certificates-bundle)
 - Base libraries (zlib, pcre2, libidn2, libunistring)
+- ncurses libraries (libncursesw, libformw, libmenuw, libpanelw)
+- readline (command-line editing)
+- Neovim runtime libraries (luv, libtermkey, libvterm, msgpack-c, tree-sitter, unibilium, musl-libintl, luajit, libuv)
+- And many more common libraries
 
-**During first package install:**
-- pcre2 (regex support)
-- zlib (compression support)
+### Shared Library Dependencies
 
-These are installed once and marked with a flag file at `/var/lib/ipkg/.alpine_deps_installed`.
+Alpine packages list runtime dependencies using `so:` notation (like `so:libluv.so.1`). The dependency resolver automatically:
 
-### Package-Specific Dependencies
+1. Detects `so:*` dependencies in package metadata
+2. Maps them to actual package names (e.g., `so:libluv.so.1` → `luv`)
+3. Installs the corresponding package if not already installed
 
-Some packages have specific dependencies you need to install manually:
+**Common mappings:**
+- `so:libluv.so.1` → `luv`
+- `so:libtermkey.so.1` → `libtermkey`
+- `so:libvterm.so.0` → `libvterm`
+- `so:libmsgpack-c.so.2` → `msgpack-c`
+- `so:libtree-sitter.so.0` → `tree-sitter`
+- `so:libunibilium.so.4` → `unibilium`
+- And many more...
+
+### No Manual Dependency Management Needed
+
+You can now install packages directly without worrying about dependencies:
 
 **Python development:**
 ```bash
-(isobox) # isobox install python3
 (isobox) # isobox install py3-pip
-(isobox) # isobox install python3-dev
-(isobox) # isobox install gcc
-(isobox) # isobox install musl-dev
+# Dependencies (python3, etc.) are installed automatically
 ```
 
 **Node.js development:**
 ```bash
 (isobox) # isobox install nodejs
-(isobox) # isobox install npm
+# Dependencies (libstdc++, c-ares, etc.) are installed automatically
 ```
 
 **Git with SSH:**
 ```bash
 (isobox) # isobox install git
-(isobox) # isobox install openssh-client
+# Dependencies (openssh-client, libcurl, etc.) are installed automatically
 ```
 
 ## Package Database Operations
@@ -439,14 +612,14 @@ The database is plain JSON, so you can manually add or remove entries if needed.
 
 **Causes:**
 - Package name is misspelled
-- Package doesn't exist in Alpine v3.19
+- Package doesn't exist in Alpine v3.18
 - Package is in a different repository (testing, edge)
 
 **Solutions:**
 1. Check spelling of package name
 2. Search Alpine package database: https://pkgs.alpinelinux.org/packages
 3. Try alternative names (e.g., `python3` not `python`)
-4. Check if package exists in v3.19 specifically
+4. Check if package exists in v3.18 specifically
 
 ### Download Failed
 
@@ -512,20 +685,31 @@ If you want to reinstall:
 
 **Error:** `error while loading shared libraries: libfoo.so.1`
 
-**Cause:** Package depends on libraries not in the base dependencies
+**Cause:** Package dependency was not properly resolved (rare with automatic dependency resolution)
 
 **Solution:**
-1. Identify missing library: `(isobox) # ldd /usr/bin/<binary>`
-2. Search for package providing library: https://pkgs.alpinelinux.org/contents
-3. Install the library package: `(isobox) # isobox install <library-package>`
+This should rarely happen with automatic dependency resolution. If it does:
 
-Common library packages:
-- `libssl3` - SSL/TLS
-- `libcrypto3` - Cryptography
-- `pcre2` - Regular expressions
-- `zlib` - Compression
-- `ncurses-libs` - Terminal UI
-- `readline` - Command-line editing
+1. **Check if base system is up to date:**
+   ```bash
+   # Exit environment and rebuild cache
+   exit
+   isobox recache
+
+   # Reinitialize environment
+   isobox destroy
+   isobox init
+   isobox enter
+   ```
+
+2. **If problem persists, manually install the missing library:**
+   - Identify missing library: `(isobox) # ldd /usr/bin/<binary>`
+   - Search for package providing library: https://pkgs.alpinelinux.org/contents
+   - Install the library package: `(isobox) # isobox install <library-package>`
+
+3. **Report the issue:**
+   - This may indicate a missing mapping in the `so:` dependency resolver
+   - The mapping can be added to `scripts/isobox-internal.sh` in the `map_so_to_package()` function
 
 ### Package Manager Not Found
 
@@ -590,18 +774,18 @@ The package manager extracts the entire archive to `/` (the isolated root).
 ### Download URL Structure
 
 ```
-https://dl-cdn.alpinelinux.org/alpine/v3.19/{repo}/x86_64/{package}.apk
+https://dl-cdn.alpinelinux.org/alpine/v3.18/{repo}/x86_64/{package}.apk
 ```
 
 Components:
-- `v3.19` - Alpine version
+- `v3.18` - Alpine version
 - `{repo}` - Repository: `main` or `community`
 - `x86_64` - Architecture
 - `{package}` - Package filename with version
 
 Example:
 ```
-https://dl-cdn.alpinelinux.org/alpine/v3.19/main/x86_64/git-2.43.7-r0.apk
+https://dl-cdn.alpinelinux.org/alpine/v3.18/main/x86_64/git-2.43.0-r0.apk
 ```
 
 ### Package Discovery
@@ -648,30 +832,15 @@ Packages are deleted immediately after extraction to save space.
 
 ## Limitations
 
-### 1. No Full Dependency Resolution
+### 1. No Version Pinning
 
-Only base libraries (pcre2, zlib) are auto-installed. Other dependencies must be installed manually.
+Always installs the latest version from Alpine v3.18 repositories. You cannot specify a version.
 
-Example:
-```bash
-# Wrong - may fail with missing dependencies
-(isobox) # isobox install gcc
-
-# Right - install dependencies first
-(isobox) # isobox install musl-dev
-(isobox) # isobox install binutils
-(isobox) # isobox install gcc
-```
-
-### 2. No Version Pinning
-
-Always installs the latest version from Alpine v3.19 repositories. You cannot specify a version.
-
-### 3. No Package Verification
+### 2. No Package Verification
 
 No GPG signature checking. Packages are downloaded over HTTPS but signatures are not verified.
 
-### 4. Basic Removal
+### 3. Basic Removal
 
 `isobox remove <package>` only removes the database entry. Files remain on disk.
 
@@ -682,12 +851,12 @@ sudo rm -rf .isobox/usr/bin/<binary>
 sudo rm -rf .isobox/usr/lib/<libraries>
 ```
 
-### 5. No Search Command
+### 4. No Search Command
 
 No built-in package search. Use the Alpine package website:
 https://pkgs.alpinelinux.org/packages
 
-### 6. No Upgrade Command
+### 5. No Upgrade Command
 
 No way to upgrade packages. To update a package:
 ```bash
@@ -695,11 +864,11 @@ No way to upgrade packages. To update a package:
 (isobox) # isobox install <package>
 ```
 
-### 7. No Conflict Detection
+### 6. No Conflict Detection
 
 If two packages provide the same file, the last one installed wins (files are overwritten).
 
-### 8. Architecture Locked to x86_64
+### 7. Architecture Locked to x86_64
 
 Only x86_64 packages are supported. No ARM, ARM64, or other architectures.
 
@@ -771,7 +940,7 @@ Then install project-specific packages.
 
 Before installing, verify the package exists:
 ```
-https://pkgs.alpinelinux.org/packages?name=<package>&branch=v3.19
+https://pkgs.alpinelinux.org/packages?name=<package>&branch=v3.18
 ```
 
 This prevents failed installations.
@@ -787,15 +956,14 @@ cd ~/pyproject
 isobox init
 isobox enter
 
-# Inside environment
-(isobox) # isobox install python3
+# Inside environment - python3 and gcc are pre-installed
+(isobox) # python3 --version
+(isobox) # gcc --version
 (isobox) # isobox install py3-pip
 (isobox) # isobox install python3-dev
-(isobox) # isobox install gcc
 (isobox) # isobox install musl-dev
 
 # Use Python
-(isobox) # python3 --version
 (isobox) # pip install requests
 (isobox) # python3 -c "import requests; print(requests.__version__)"
 (isobox) # exit
@@ -858,8 +1026,8 @@ cd ~/build
 isobox init
 isobox enter
 
-# Inside environment
-(isobox) # isobox install gcc
+# Inside environment - gcc is pre-installed
+(isobox) # gcc --version
 (isobox) # isobox install g++
 (isobox) # isobox install make
 (isobox) # isobox install cmake
@@ -879,11 +1047,12 @@ isobox enter
 |---------|--------|-----|-----|-----|-----|
 | Scope | Per-directory | System | System | Project | Project |
 | Isolation | Complete | None | None | Partial | Partial |
-| Dependencies | Semi-auto | Auto | Auto | Auto | Auto |
+| Dependencies | **Auto** | Auto | Auto | Auto | Auto |
 | Database | JSON | SQLite | dpkg | package.json | Metadata |
 | Size | Tiny | Small | Large | Medium | Medium |
-| Language | Shell | C | C | JavaScript | Python |
+| Language | **Go** | C | C | JavaScript | Python |
 | Verification | None | GPG | GPG | SHA | SHA |
+| Static Binary | **Yes** | No | No | No | No |
 
 IsoBox package manager is designed for simplicity and environment isolation, not as a replacement for full-featured system package managers.
 
@@ -891,24 +1060,63 @@ IsoBox package manager is designed for simplicity and environment isolation, not
 
 Planned improvements:
 
-1. **Full dependency resolution** - Automatically install all required packages
-2. **GPG verification** - Verify package signatures
-3. **Version pinning** - Install specific package versions
-4. **Package search** - Built-in search: `isobox search <term>`
-5. **Clean removal** - Delete files on `isobox remove`
-6. **Upgrade command** - `isobox upgrade <package>`
-7. **List available** - Show all available packages
-8. **Package info** - Display package details
-9. **Multiple architectures** - Support ARM, ARM64
-10. **Custom repositories** - Add non-Alpine repositories
+1. ~~**Full dependency resolution** - Automatically install all required packages~~ **Completed**
+2. ~~**Package name aliases** - Map common names to Alpine packages~~ **Completed**
+3. ~~**Batch installation** - Install packages from configuration files~~ **Completed**
+4. **GPG verification** - Verify package signatures
+5. **Version pinning** - Install specific package versions
+6. **Package search** - Built-in search: `isobox search <term>`
+7. **Clean removal** - Delete files on `isobox remove`
+8. **Upgrade command** - `isobox upgrade <package>`
+9. **List available** - Show all available packages
+10. **Package info** - Display package details
+11. **Multiple architectures** - Support ARM, ARM64
+12. **Custom repositories** - Add non-Alpine repositories
+
+## Technical Implementation
+
+The package manager is implemented in pure Go with the following architecture:
+
+### Core Components
+
+- **`pkg/ipkg/manager.go`**: Main package manager implementation
+  - Repository searching and package discovery
+  - HTTP-based package downloads
+  - Tar/gzip archive extraction
+  - Dependency parsing and resolution
+  - JSON database management
+
+- **`pkg/ipkg/dependencies.go`**: TOML configuration support
+  - Parse dependencies.toml files
+  - Batch package installation
+  - Group-based package management
+
+### Key Features
+
+**Statically Linked Binary:**
+- Built with `CGO_ENABLED=0` for static compilation
+- No external dependencies required
+- Works in minimal environments (musl libc compatible)
+- Single ~8-10MB binary includes all functionality
+
+**Auto-Detection:**
+- Detects when running inside IsoBox by checking `/etc/os-release`
+- Automatically switches between host mode and internal mode
+- Uses different root paths depending on context
+
+**Pure Go Implementation:**
+- No shell script dependencies
+- Standard library only (`archive/tar`, `compress/gzip`, `net/http`)
+- TOML parsing via `github.com/BurntSushi/toml`
 
 ## Contributing
 
 To improve the package manager:
 
-1. Edit `scripts/isobox-internal.sh` (source script)
-2. Test in a clean environment
-3. Update this documentation
-4. Submit a pull request
+1. Edit source files in `pkg/ipkg/` directory
+2. Build with `make build` (creates static binary)
+3. Test in a clean environment
+4. Update this documentation
+5. Submit a pull request
 
-The script is installed to `.isobox/bin/isobox` during `isobox init`.
+The binary is automatically copied to `.isobox/bin/isobox` during `isobox init`.

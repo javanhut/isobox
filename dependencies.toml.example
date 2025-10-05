@@ -1,0 +1,34 @@
+# IsoBox Dependencies Configuration
+# This file defines packages to be installed in the IsoBox environment
+
+[packages]
+# Core development tools
+dev = ["git", "vim", "neovim", "python3", "go", "gcc", "make"]
+
+# Shells
+shells = ["bash", "zsh"]
+
+# Network tools
+network = ["curl", "wget", "openssh-client"]
+
+# System utilities
+utils = ["htop", "tmux", "jq"]
+
+# Custom packages (flat list)
+custom = []
+
+[options]
+# Install dev packages by default
+install_dev = true
+
+# Install shells by default
+install_shells = true
+
+# Install network tools by default
+install_network = false
+
+# Install utils by default
+install_utils = false
+
+# Install custom packages
+install_custom = false

@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -16,6 +17,7 @@ type Environment struct {
 	Created   time.Time `json:"created"`
 	IsoboxDir string    `json:"isobox_dir"`
 	Username  string    `json:"username"`
+	Shell     string    `json:"shell"`
 }
 
 func getBaseCachePath() string {
@@ -47,6 +49,9 @@ func RebuildCache() error {
 }
 
 func buildBaseSystem(cachePath string) error {
+	// Install performance optimization tools
+	installOptimizationTools()
+
 	tmpDir, err := os.MkdirTemp("", "isobox-base-*")
 	if err != nil {
 		return fmt.Errorf("create temp dir: %w", err)
@@ -86,30 +91,115 @@ func buildBaseSystem(cachePath string) error {
 		return err
 	}
 
-	if err := tmpEnv.setupInternalPackageManager(); err != nil {
-		return err
+	if err := tmpEnv.setupShells(); err != nil {
+		fmt.Printf("  Warning: Shell setup failed: %v\n", err)
 	}
 
 	fmt.Println("\nCreating base system tarball...")
-	cmd := exec.Command("tar", "-czf", cachePath, "-C", tmpDir, ".")
+	fmt.Print("  Compressing... ")
+
+	// Use pigz for parallel compression if available, otherwise use gzip
+	var cmd *exec.Cmd
+	if _, err := exec.LookPath("pigz"); err == nil {
+		// pigz uses all available CPU cores by default
+		cmd = exec.Command("tar", "--use-compress-program=pigz", "-cf", cachePath, "-C", tmpDir, ".")
+	} else {
+		cmd = exec.Command("tar", "-czf", cachePath, "-C", tmpDir, ".")
+	}
+
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("create tarball: %w (output: %s)", err, string(output))
 	}
 
+	fmt.Println("Done!")
 	fmt.Printf("Base system cached at: %s\n", cachePath)
 	return nil
 }
 
+func installOptimizationTools() {
+	// Check if tools are already installed
+	hasAria2c := false
+	hasPigz := false
+
+	if _, err := exec.LookPath("aria2c"); err == nil {
+		hasAria2c = true
+	}
+	if _, err := exec.LookPath("pigz"); err == nil {
+		hasPigz = true
+	}
+
+	if hasAria2c && hasPigz {
+		return
+	}
+
+	// Detect OS
+	osRelease, err := os.ReadFile("/etc/os-release")
+	if err != nil {
+		return
+	}
+
+	osInfo := string(osRelease)
+	var installCmd []string
+	var packages []string
+
+	if !hasAria2c {
+		packages = append(packages, "aria2")
+	}
+	if !hasPigz {
+		packages = append(packages, "pigz")
+	}
+
+	// Determine package manager based on OS
+	if strings.Contains(osInfo, "ID=arch") || strings.Contains(osInfo, "ID_LIKE=arch") {
+		installCmd = append([]string{"pacman", "-S", "--noconfirm", "--needed"}, packages...)
+	} else if strings.Contains(osInfo, "ID=ubuntu") || strings.Contains(osInfo, "ID=debian") || strings.Contains(osInfo, "ID_LIKE=debian") {
+		installCmd = append([]string{"apt-get", "install", "-y"}, packages...)
+	} else if strings.Contains(osInfo, "ID=fedora") || strings.Contains(osInfo, "ID=rhel") || strings.Contains(osInfo, "ID_LIKE=\"rhel fedora\"") {
+		installCmd = append([]string{"dnf", "install", "-y"}, packages...)
+	} else if strings.Contains(osInfo, "ID=centos") {
+		installCmd = append([]string{"yum", "install", "-y"}, packages...)
+	} else if strings.Contains(osInfo, "ID=opensuse") || strings.Contains(osInfo, "ID_LIKE=\"suse\"") {
+		installCmd = append([]string{"zypper", "install", "-y"}, packages...)
+	} else if strings.Contains(osInfo, "ID=alpine") {
+		installCmd = append([]string{"apk", "add"}, packages...)
+	} else {
+		// Unknown OS, skip installation
+		return
+	}
+
+	fmt.Printf("Installing performance tools (%s)...\n", strings.Join(packages, ", "))
+
+	cmd := exec.Command("sudo", installCmd...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		fmt.Printf("  Warning: Failed to install optimization tools: %v\n", err)
+		fmt.Printf("  Continuing with standard tools (wget, gzip)\n")
+	} else {
+		fmt.Println("  Performance tools installed successfully!")
+	}
+}
+
 func extractBaseSystem(targetDir, cachePath string) error {
-	fmt.Println("Extracting base system...")
-	cmd := exec.Command("tar", "-xzf", cachePath, "-C", targetDir)
+	fmt.Print("Extracting base system... ")
+
+	// Use pigz for parallel decompression if available
+	var cmd *exec.Cmd
+	if _, err := exec.LookPath("pigz"); err == nil {
+		cmd = exec.Command("tar", "--use-compress-program=pigz", "-xf", cachePath, "-C", targetDir)
+	} else {
+		cmd = exec.Command("tar", "-xzf", cachePath, "-C", targetDir)
+	}
+
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("extract tarball: %w (output: %s)", err, string(output))
 	}
+	fmt.Println("Done!")
 	return nil
 }
 
-func Initialize(path string) (*Environment, error) {
+func Initialize(path string, shell string) (*Environment, error) {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return nil, fmt.Errorf("get absolute path: %w", err)
@@ -122,11 +212,16 @@ func Initialize(path string) (*Environment, error) {
 	isoboxDir := filepath.Join(absPath, ".isobox")
 	username := filepath.Base(absPath)
 
+	if shell == "" {
+		shell = "bash"
+	}
+
 	env := &Environment{
 		Root:      absPath,
 		Created:   time.Now(),
 		IsoboxDir: isoboxDir,
 		Username:  username,
+		Shell:     shell,
 	}
 
 	baseCachePath := getBaseCachePath()
@@ -155,6 +250,10 @@ func Initialize(path string) (*Environment, error) {
 	}
 
 	if err := env.createEssentialFiles(); err != nil {
+		return nil, err
+	}
+
+	if err := env.setupInternalPackageManager(); err != nil {
 		return nil, err
 	}
 
@@ -241,15 +340,25 @@ func (e *Environment) createDeviceNodes() error {
 		{"tty", 5, 0},
 	}
 
+	createdCount := 0
 	for _, dev := range devices {
 		devPath := filepath.Join(devDir, dev.name)
+
+		// Check if device node already exists
+		if _, err := os.Stat(devPath); err == nil {
+			continue
+		}
+
 		cmd := exec.Command("sudo", "mknod", "-m", "666", devPath, "c", fmt.Sprintf("%d", dev.major), fmt.Sprintf("%d", dev.minor))
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("mknod %s: %w", dev.name, err)
 		}
+		createdCount++
 	}
 
-	fmt.Println("  Created device nodes: /dev/null, /dev/zero, /dev/random, /dev/urandom, /dev/tty")
+	if createdCount > 0 {
+		fmt.Println("  Created device nodes: /dev/null, /dev/zero, /dev/random, /dev/urandom, /dev/tty")
+	}
 	return nil
 }
 
@@ -305,29 +414,114 @@ func (e *Environment) setupWithBusybox(busyboxPath string) error {
 
 func (e *Environment) installAlpineBaseDeps() error {
 	deps := []string{
+		// Core C/C++ runtime libraries
+		"musl",
+		"libgcc",
+
+		// Compression libraries
 		"zlib",
-		"pcre2",
+		"libbz2",
+		"xz-libs",
+		"zstd-libs",
+		"lz4-libs",
+
+		// SSL/TLS and networking
 		"libssl3",
 		"libcrypto3",
 		"ca-certificates-bundle",
-		"libidn2",
-		"libunistring",
 		"libcurl",
 		"nghttp2-libs",
-		"brotli-libs",
 		"c-ares",
+
+		// Text processing and regex
+		"pcre2",
+		"grep",
+		"sed",
+		"gawk",
+
+		// Internationalization
+		"libidn2",
+		"libunistring",
+
+		// Common utilities
+		"coreutils",
+		"findutils",
+		"tar",
+		"gzip",
+		"file",
+		"diffutils",
+		"patch",
+
+		// Archive handling
+		"brotli-libs",
 		"libpsl",
+
+		// Common libraries for applications
+		"libffi",
+		"libuuid",
+		"sqlite-libs",
+		"expat",
+		"libxml2",
+		"libxslt",
+		"yaml",
+		"gmp",
+		"mpfr4",
+		"libgomp",
+		"mpc1",
+
+		// JSON/data processing
+		"jansson",
+		"jq",
+
+		// Network utilities
+		"libevent",
+		"libarchive",
+		"curl",
+
+		// Development essentials
+		"pkgconf",
+		"binutils",
+		"make",
+
+		// Additional runtime support
+		"tzdata",
+		"attr",
+		"libcap",
+
+		// Process management
+		"procps-ng",
+		"util-linux",
+
+		// Additional shell utilities
+		"less",
+		"which",
+		"nano",
+		// Essential Libraries for utils
+		"ncurses-terminfo-base",
+		"libncursesw",
+		"libformw",
+		"libmenuw",
+		"libpanelw",
+		"readline",
+		"libacl",
+		"libattr",
+		"utmps-libs",
+		"s6",
+		"skalibs",
+		"oniguruma",
+		"oniguruma-dev",
+		"luv",
+		"libtermkey",
+		"libvterm",
+		"msgpack-c",
+		"tree-sitter",
+		"unibilium",
+		"musl-libintl",
+		"luajit",
+		"libuv",
 	}
 
-	for _, dep := range deps {
-		if err := e.installAlpinePackage(dep); err != nil {
-			fmt.Printf("  Warning: failed to install %s: %v\n", dep, err)
-			continue
-		}
-	}
-
-	fmt.Println("  Added Alpine base dependencies")
-	return nil
+	return e.installAlpinePackages(deps)
 }
 
 func (e *Environment) addSSLCapableTools() error {
@@ -337,22 +531,253 @@ func (e *Environment) addSSLCapableTools() error {
 	}
 
 	packages := []string{"wget", "ca-certificates"}
+	return e.installAlpinePackages(packages)
+}
 
-	for _, pkg := range packages {
-		if err := e.installAlpinePackage(pkg); err != nil {
-			fmt.Printf("  Warning: failed to install %s: %v\n", pkg, err)
-			continue
-		}
-		fmt.Printf("  Added Alpine %s\n", pkg)
+// installAlpinePackages installs multiple packages efficiently by caching repo indices
+func (e *Environment) installAlpinePackages(packages []string) error {
+	repos := []string{
+		"https://dl-cdn.alpinelinux.org/alpine/v3.18/main/x86_64/",
+		"https://dl-cdn.alpinelinux.org/alpine/v3.18/community/x86_64/",
 	}
 
+	// Build package URL cache in parallel
+	fmt.Printf("  Building package index...\n")
+	pkgURLs := make(map[string]string)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+
+	// Download repo indices concurrently
+	for _, baseURL := range repos {
+		wg.Add(1)
+		go func(url string) {
+			defer wg.Done()
+
+			cmd := exec.Command("wget", "-qO-", url)
+			output, err := cmd.Output()
+			if err != nil {
+				return
+			}
+
+			lines := strings.Split(string(output), "\n")
+			for _, line := range lines {
+				for _, pkgName := range packages {
+					if strings.Contains(line, fmt.Sprintf(`href="%s-`, pkgName)) {
+						start := strings.Index(line, `href="`) + 6
+						end := strings.Index(line[start:], `"`)
+						if end > 0 {
+							pkgFile := line[start : start+end]
+							if strings.HasPrefix(pkgFile, pkgName+"-") && strings.HasSuffix(pkgFile, ".apk") {
+								mu.Lock()
+								if _, exists := pkgURLs[pkgName]; !exists {
+									pkgURLs[pkgName] = url + pkgFile
+								}
+								mu.Unlock()
+								break
+							}
+						}
+					}
+				}
+			}
+		}(baseURL)
+	}
+	wg.Wait()
+
+	totalPkgs := len(packages)
+	fmt.Printf("  Installing %d packages...\n", totalPkgs)
+
+	// Phase 1: Download all packages in parallel (16 workers)
+	type downloadJob struct {
+		name string
+		url  string
+	}
+
+	type downloadResult struct {
+		name    string
+		tmpFile string
+		success bool
+	}
+
+	downloadJobs := make(chan downloadJob, totalPkgs)
+	downloadResults := make(chan downloadResult, totalPkgs)
+
+	// Start 16 download workers
+	numDownloadWorkers := 16
+	for w := 0; w < numDownloadWorkers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for job := range downloadJobs {
+				tmpFile, success := downloadPackageFile(job.name, job.url)
+				downloadResults <- downloadResult{
+					name:    job.name,
+					tmpFile: tmpFile,
+					success: success,
+				}
+			}
+		}()
+	}
+
+	// Queue downloads
+	for _, pkgName := range packages {
+		pkgURL, found := pkgURLs[pkgName]
+		if !found {
+			downloadResults <- downloadResult{name: pkgName, success: false}
+			continue
+		}
+		downloadJobs <- downloadJob{name: pkgName, url: pkgURL}
+	}
+	close(downloadJobs)
+
+	// Wait for all downloads to complete
+	go func() {
+		wg.Wait()
+		close(downloadResults)
+	}()
+
+	// Collect downloaded files
+	downloadedFiles := make(map[string]string)
+	downloadedCount := 0
+
+	fmt.Print("  Downloading: [")
+	barWidth := 40
+
+	for result := range downloadResults {
+		if result.success {
+			downloadedFiles[result.name] = result.tmpFile
+			downloadedCount++
+		}
+
+		// Update progress bar
+		progress := float64(len(downloadedFiles)+1) / float64(totalPkgs)
+		filledWidth := int(progress * float64(barWidth))
+
+		fmt.Print("\r  Downloading: [")
+		for i := 0; i < barWidth; i++ {
+			if i < filledWidth {
+				fmt.Print("=")
+			} else if i == filledWidth {
+				fmt.Print(">")
+			} else {
+				fmt.Print(" ")
+			}
+		}
+		fmt.Printf("] %d/%d", len(downloadedFiles), totalPkgs)
+	}
+	fmt.Println()
+
+	// Phase 2: Extract all packages in parallel (16 workers)
+	type extractJob struct {
+		name    string
+		tmpFile string
+	}
+
+	extractJobs := make(chan extractJob, len(downloadedFiles))
+	extractResults := make(chan bool, len(downloadedFiles))
+
+	// Start 16 extraction workers
+	numExtractWorkers := 16
+	for w := 0; w < numExtractWorkers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for job := range extractJobs {
+				success := e.extractPackageFile(job.tmpFile)
+				os.Remove(job.tmpFile)
+				extractResults <- success
+			}
+		}()
+	}
+
+	// Queue extractions
+	for name, tmpFile := range downloadedFiles {
+		extractJobs <- extractJob{name: name, tmpFile: tmpFile}
+	}
+	close(extractJobs)
+
+	// Wait for all extractions to complete
+	go func() {
+		wg.Wait()
+		close(extractResults)
+	}()
+
+	// Display extraction progress
+	installedCount := 0
+	extractedCount := 0
+
+	fmt.Print("  Extracting: [")
+
+	for success := range extractResults {
+		if success {
+			installedCount++
+		}
+		extractedCount++
+
+		// Update progress bar
+		progress := float64(extractedCount) / float64(len(downloadedFiles))
+		filledWidth := int(progress * float64(barWidth))
+
+		fmt.Print("\r  Extracting: [")
+		for i := 0; i < barWidth; i++ {
+			if i < filledWidth {
+				fmt.Print("=")
+			} else if i == filledWidth {
+				fmt.Print(">")
+			} else {
+				fmt.Print(" ")
+			}
+		}
+		fmt.Printf("] %d/%d", extractedCount, len(downloadedFiles))
+	}
+
+	fmt.Printf("\n  Added %d Alpine packages\n", installedCount)
 	return nil
 }
 
+// downloadPackageFile downloads a single package using aria2c or wget
+func downloadPackageFile(pkgName, pkgURL string) (string, bool) {
+	tmpFile := fmt.Sprintf("/tmp/%s-%d.apk", pkgName, time.Now().UnixNano())
+
+	// Try aria2c first (faster with multi-connection support)
+	if _, err := exec.LookPath("aria2c"); err == nil {
+		cmd := exec.Command("aria2c",
+			"-x", "4", // 4 connections per download
+			"-s", "4", // split into 4 segments
+			"-k", "1M", // chunk size
+			"--quiet=true",
+			"--allow-overwrite=true",
+			"-d", "/tmp",
+			"-o", filepath.Base(tmpFile),
+			pkgURL)
+		if err := cmd.Run(); err == nil {
+			return tmpFile, true
+		}
+	}
+
+	// Fallback to wget
+	cmd := exec.Command("wget", "-q", "-O", tmpFile, pkgURL)
+	if err := cmd.Run(); err != nil {
+		return "", false
+	}
+
+	return tmpFile, true
+}
+
+// extractPackageFile extracts a single package to the target directory
+func (e *Environment) extractPackageFile(tmpFile string) bool {
+	cmd := exec.Command("tar", "-xzf", tmpFile, "-C", e.IsoboxDir)
+	if err := cmd.Run(); err != nil {
+		return false
+	}
+	return true
+}
+
 func (e *Environment) installAlpinePackage(pkgName string) error {
+	// Use Alpine v3.18 which still uses the old APK format (APKv2)
+	// Alpine v3.19+ uses APKv3 which requires apk-tools to extract
 	repos := []string{
-		"https://dl-cdn.alpinelinux.org/alpine/v3.19/main/x86_64/",
-		"https://dl-cdn.alpinelinux.org/alpine/v3.19/community/x86_64/",
+		"https://dl-cdn.alpinelinux.org/alpine/v3.18/main/x86_64/",
+		"https://dl-cdn.alpinelinux.org/alpine/v3.18/community/x86_64/",
 	}
 
 	var pkgURL string
@@ -398,6 +823,7 @@ func (e *Environment) installAlpinePackage(pkgName string) error {
 	}
 	defer os.Remove(tmpFile)
 
+	// Alpine v3.18 uses APKv2 format which is a standard tar.gz
 	cmd = exec.Command("tar", "-xzf", tmpFile, "-C", e.IsoboxDir)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("extract failed: %w (output: %s)", err, string(output))
@@ -641,53 +1067,28 @@ func (e *Environment) setupLdConfig() error {
 	return os.WriteFile(ldSoConf, []byte(content), 0644)
 }
 
-func (e *Environment) setupInternalPackageManager() error {
-	fmt.Println("\nSetting up internal package manager...")
 
-	scriptPath := findInternalScript()
-	if scriptPath == "" {
-		return fmt.Errorf("internal package manager script not found (isobox-internal.sh)")
+func (e *Environment) setupShells() error {
+	fmt.Println("\nSetting up shells (bash, zsh, sh)...")
+
+	// Install shell dependencies and shells together
+	packages := []string{
+		"python3",
+		"gcc",
+		"go",
+		"vim",
+		"bash",
+		"zsh",
 	}
 
-	destPath := filepath.Join(e.IsoboxDir, "bin/isobox")
-
-	if err := copyBinary(scriptPath, destPath); err != nil {
-		return fmt.Errorf("copy isobox script: %w", err)
+	if err := e.installAlpinePackages(packages); err != nil {
+		return fmt.Errorf("shell installation failed: %w", err)
 	}
 
-	if err := os.Chmod(destPath, 0755); err != nil {
-		return fmt.Errorf("chmod isobox script: %w", err)
-	}
-
-	fmt.Println("  Installed: /bin/isobox (internal package manager)")
+	fmt.Println("  sh is provided by BusyBox")
 	return nil
 }
 
-func findInternalScript() string {
-	searchPaths := []string{}
-
-	if exePath, err := os.Executable(); err == nil {
-		exeDir := filepath.Dir(exePath)
-		searchPaths = append(searchPaths, filepath.Join(exeDir, "scripts/isobox-internal.sh"))
-	}
-
-	if workingDir, err := os.Getwd(); err == nil {
-		searchPaths = append(searchPaths, filepath.Join(workingDir, "scripts/isobox-internal.sh"))
-
-		gitRoot := findGitRoot(workingDir)
-		if gitRoot != "" {
-			searchPaths = append(searchPaths, filepath.Join(gitRoot, "scripts/isobox-internal.sh"))
-		}
-	}
-
-	for _, path := range searchPaths {
-		if _, err := os.Stat(path); err == nil {
-			return path
-		}
-	}
-
-	return ""
-}
 
 func findGitRoot(startDir string) string {
 	dir := startDir
@@ -709,11 +1110,13 @@ func findGitRoot(startDir string) string {
 func (e *Environment) createEssentialFiles() error {
 	fmt.Println("\nCreating essential configuration files...")
 
+	shellPath := "/bin/" + e.Shell
+
 	etcPasswd := filepath.Join(e.IsoboxDir, "etc/passwd")
 	passwdContent := fmt.Sprintf(`root:x:0:0:root:/root:/bin/sh
-%s:x:1000:1000:%s:/home/%s:/bin/sh
+%s:x:1000:1000:%s:/home/%s:%s
 nobody:x:65534:65534:nobody:/:/bin/false
-`, e.Username, e.Username, e.Username)
+`, e.Username, e.Username, e.Username, shellPath)
 	if err := os.WriteFile(etcPasswd, []byte(passwdContent), 0644); err != nil {
 		return fmt.Errorf("create passwd: %w", err)
 	}
@@ -836,6 +1239,29 @@ services:   files
 	return nil
 }
 
+func (e *Environment) setupInternalPackageManager() error {
+	fmt.Println("\nSetting up internal package manager...")
+
+	// Get the current executable path
+	exePath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("get executable path: %w", err)
+	}
+
+	// Copy isobox binary into the environment
+	destPath := filepath.Join(e.IsoboxDir, "bin/isobox")
+	if err := copyBinary(exePath, destPath); err != nil {
+		return fmt.Errorf("copy isobox binary: %w", err)
+	}
+
+	if err := os.Chmod(destPath, 0755); err != nil {
+		return fmt.Errorf("chmod isobox binary: %w", err)
+	}
+
+	fmt.Println("  Installed: /bin/isobox (internal package manager)")
+	return nil
+}
+
 func (e *Environment) save() error {
 	configPath := filepath.Join(e.IsoboxDir, "config.json")
 	data, err := json.MarshalIndent(e, "", "  ")
@@ -897,16 +1323,18 @@ func (e *Environment) copyProjectFiles() error {
 }
 
 func (e *Environment) EnterShell() error {
-	shell := "/bin/bash"
-	isoboxShell := filepath.Join(e.IsoboxDir, "bin/bash")
+	shell := "/bin/" + e.Shell
+	isoboxShell := filepath.Join(e.IsoboxDir, "bin", e.Shell)
 
 	if _, err := os.Stat(isoboxShell); os.IsNotExist(err) {
+		fmt.Printf("Warning: Configured shell '%s' not found, falling back to sh\n", e.Shell)
 		isoboxShell = filepath.Join(e.IsoboxDir, "bin/sh")
 		shell = "/bin/sh"
 	}
 
 	fmt.Printf("Entering isolated environment as user '%s'...\n", e.Username)
 	fmt.Printf("Root filesystem: %s\n", e.IsoboxDir)
+	fmt.Printf("Shell: %s\n", shell)
 	fmt.Printf("Working directory: /home/%s\n\n", e.Username)
 
 	homeDir := fmt.Sprintf("/home/%s", e.Username)

@@ -156,34 +156,87 @@ sudo chroot /path/to/.isobox /bin/bash -l
 - Displays welcome message
 - Sets up aliases and PS1
 
+**Built-in Shell Aliases:**
+- `ll` - equivalent to `ls -lah` (detailed list with hidden files)
+- `la` - equivalent to `ls -A` (all files except . and ..)
+- `l` - equivalent to `ls -CF` (columnar format with indicators)
+
+**Pre-installed Development Tools:**
+- python3 - Python 3 interpreter
+- gcc - GNU C compiler
+- go - Go programming language
+- vim - Vi IMproved text editor
+- bash - Bourne Again Shell
+- zsh - Z Shell
+
 ### 5. Package Manager (IPKG)
 
-**Location:** `pkg/ipkg/manager.go`
+**Location:** `pkg/ipkg/manager.go`, `pkg/ipkg/dependencies.go`
 
-**Functionality:**
-- Downloads Alpine Linux packages (.apk files)
-- Extracts to `.isobox/` (respects directory structure)
-- Tracks installations in `.isobox/var/lib/ipkg/installed.json`
-- Supports install, remove, list, update
+**Implementation:**
+- **Pure Go**: No shell scripts, all logic in Go
+- **Statically linked**: `isobox` binary works anywhere
+- **Auto-detection**: Binary detects if running inside IsoBox
+- **Context-aware**: Uses different root paths based on location
+
+**Core Components:**
+
+1. **Repository Management:**
+   - Searches Alpine v3.18 main and community repositories
+   - HTTP-based package discovery via HTML index parsing
+   - Regex pattern matching to find package files
+
+2. **Dependency Resolution:**
+   - Parses `.PKGINFO` from APK files
+   - Resolves package dependencies recursively
+   - Maps shared library dependencies (so:*) to packages
+   - Filters invalid dependencies (cmd:, pc:, absolute paths)
+   - Circular dependency prevention
+
+3. **Package Extraction:**
+   - Pure Go tar/gzip extraction (no external tools)
+   - Creates directories, files, and symlinks
+   - Preserves permissions and ownership
+   - Skips metadata files
+
+4. **Database Management:**
+   - JSON-based tracking at `/var/lib/ipkg/installed.json`
+   - Records name, version, and installation timestamp
 
 **Package flow:**
-1. User runs: `isobox pkg install curl`
-2. Downloads: `https://dl-cdn.alpinelinux.org/alpine/v3.19/main/x86_64/curl.apk`
-3. Extracts APK (tar.gz) to `.isobox/`
-4. Updates database:
+1. User runs: `isobox install git` (inside environment)
+2. Binary detects it's inside IsoBox (checks `/etc/os-release`)
+3. Resolves "git" package name (no alias needed)
+4. Searches Alpine repositories:
+   - Fetches HTML index
+   - Finds `git-2.43.7-r0.apk`
+5. Downloads to `/var/cache/isobox/git.apk`
+6. Parses dependencies from `.PKGINFO`
+7. Recursively installs dependencies first
+8. Extracts APK contents to `/` (which is already `.isobox/`)
+9. Updates JSON database:
    ```json
    {
-     "name": "curl",
-     "version": "8.5.0-r0",
-     "description": "Package curl from Alpine",
-     "files": ["/usr/bin/curl"]
+     "name": "git",
+     "version": "latest",
+     "installed": "2025-10-05T14:00:00Z"
    }
    ```
-5. Binary now available in isolated environment
+10. Binary now available in isolated environment
+
+**Batch Installation:**
+- Supports `dependencies.toml` configuration files
+- Group-based package management (dev, network, utils, etc.)
+- Can install multiple packages during init: `isobox init --install-dep deps.toml`
+
+**Binary Deployment:**
+- During `isobox init`, the statically-linked `isobox` binary is copied to `.isobox/bin/isobox`
+- Inside the environment, running `isobox` uses this copy
+- Same binary works on host and inside environment with different behavior
 
 ## Isolation Guarantees
 
-### ✅ What IS Isolated:
+### What IS Isolated:
 
 1. **Filesystem**: Cannot access host files outside `.isobox/`
 2. **Binaries**: All commands come from `.isobox/bin`
@@ -192,7 +245,7 @@ sudo chroot /path/to/.isobox /bin/bash -l
 5. **Packages**: Installed to `.isobox/`, not host
 6. **Home directory**: `/root` maps to `.isobox/root/`
 
-### ❌ What is NOT Isolated:
+### What is NOT Isolated:
 
 1. **Process namespace**: Can see host processes if `/proc` mounted
 2. **Network**: Shares host network stack
@@ -255,14 +308,14 @@ IsoBox is **not a container**. It's a chroot-based isolated environment:
 
 ### Recommended Use Cases:
 
-✅ **Safe for:**
+**Safe for:**
 - Development environment isolation
 - Testing different tool versions
 - Clean build environments
 - Learning/educational purposes
 - Avoiding pollution of host system
 
-❌ **NOT safe for:**
+**NOT safe for:**
 - Running untrusted code
 - Security sandboxing
 - Production isolation

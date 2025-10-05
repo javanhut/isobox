@@ -1,20 +1,23 @@
-.PHONY: build, install, unistall, clean, check
+.PHONY: build, install, uninstall, clean, check
 
 check:
 	go test
 
 build:
-	go build -o isobox
+	CGO_ENABLED=0 go build -ldflags="-s -w" -o isobox
 
 
 install:
 	@echo "Installing ISOBOX"
-	go build -o isobox && sudo mv isobox /usr/local/bin/
+	CGO_ENABLED=0 go build -ldflags="-s -w" -o isobox
+	sudo mv isobox /usr/local/bin/
+	@echo "Installed isobox to /usr/local/bin/"
 
 
 uninstall:
-	sudo rm /usr/local/bin/isobox
+	sudo rm -f /usr/local/bin/isobox
+	@echo "Uninstalled isobox"
 
 
 clean:
-	rm isobox
+	rm -f isobox

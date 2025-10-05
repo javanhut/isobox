@@ -23,9 +23,16 @@ Get started with IsoBox in 5 minutes.
 ```bash
 git clone https://github.com/javanhut/isobox
 cd isobox
-go build -o isobox
-sudo mv isobox /usr/local/bin/
+make install
 ```
+
+This builds and installs a single statically-linked binary to `/usr/local/bin/isobox`.
+
+**Build Details:**
+- Statically linked with `CGO_ENABLED=0`
+- No external dependencies
+- ~8-10MB binary includes all functionality
+- Works in any Linux environment
 
 ### Verify Installation
 
@@ -69,6 +76,16 @@ cd ~/my-first-isobox
 isobox init
 ```
 
+By default, IsoBox uses `bash` as the shell. You can specify a different shell using the `--shell` flag:
+
+```bash
+isobox init --shell zsh    # Use zsh as default shell
+isobox init --shell bash   # Use bash as default shell (default)
+isobox init --shell sh     # Use sh as default shell
+```
+
+Available shells: `bash` (default), `zsh`, `sh`
+
 You'll see output like:
 
 ```
@@ -87,6 +104,16 @@ Found BusyBox at: /usr/bin/busybox
   Added musl libc (for Alpine packages)
   Added Alpine base dependencies
   Installed BusyBox and 150+ Unix utilities
+
+Setting up shells (bash, zsh, sh)...
+  Installing shell dependencies...
+    Installed python3
+    Installed gcc
+    Installed go
+    Installed vim
+  Added bash shell
+  Added zsh shell
+  sh is provided by BusyBox
 
 IsoBox environment created successfully!
 Location: /home/user/my-first-isobox
@@ -144,6 +171,17 @@ pwd
 whoami
 cat /etc/os-release
 which ls
+python3 --version
+gcc --version
+go version
+vim --version
+```
+
+Built-in shell aliases are also available:
+```bash
+ll      # equivalent to 'ls -lah'
+la      # equivalent to 'ls -A'
+l       # equivalent to 'ls -CF'
 ```
 
 ### 6. Exit the Environment
@@ -175,15 +213,20 @@ From within the environment:
 
 Output:
 ```
-Installing git (host: Arch Linux)...
-Downloading from Alpine Linux repository...
-Fetching package list...
-Downloading git-2.43.7-r0.apk...
-Extracting package...
-Installing Alpine library dependencies...
+Installing git...
+Resolving dependencies...
+  Downloading git...
+  Downloading libcurl...
+  Downloading pcre2...
   Installing pcre2...
-Successfully installed git
+  Installing libcurl...
+  Installing git...
 ```
+
+The package manager:
+- Automatically finds packages in Alpine repositories
+- Resolves and installs all dependencies
+- Uses pure Go for extraction (no shell scripts)
 
 ### 3. Use the Installed Package
 
@@ -304,6 +347,10 @@ cd ~/myapp
 isobox init
 isobox enter
 
+# gcc, vim, python3, go are pre-installed
+(isobox) # gcc --version
+(isobox) # vim --version
+
 (isobox) # isobox install git
 (isobox) # isobox install make
 (isobox) # git clone https://github.com/user/repo .
@@ -321,8 +368,10 @@ cd ~/test-env
 isobox init
 isobox enter
 
-(isobox) # isobox install python3
+# python3 is pre-installed
 (isobox) # python3 --version
+(isobox) # isobox install py3-pip
+(isobox) # pip --version
 
 (isobox) # exit
 ```
@@ -385,6 +434,32 @@ my-first-isobox/
 ```
 
 ## Advanced Features
+
+### Choosing Your Shell
+
+IsoBox supports multiple shells that are cached during initial installation for fast access:
+
+```bash
+# Initialize with bash (default)
+isobox init --shell bash
+
+# Initialize with zsh
+isobox init --shell zsh
+
+# Initialize with sh (BusyBox)
+isobox init --shell sh
+```
+
+The selected shell becomes the default login shell when you enter the environment. All shells (bash, zsh, sh) are available in the environment regardless of which one you choose as default.
+
+To use a different shell after initialization, you can manually run it inside the environment:
+
+```bash
+isobox enter
+(isobox) # zsh        # Switch to zsh
+(isobox) # bash       # Switch to bash
+(isobox) # sh         # Switch to sh
+```
 
 ### Migrating Directories Into IsoBox
 
@@ -556,6 +631,8 @@ Now that you know the basics:
 - Packages come from Alpine Linux repository (small, secure, musl-based)
 - All package management happens inside the environment
 - Libraries are automatically resolved from Alpine repos
+- python3, gcc, go, and vim are pre-installed in all environments
+- Use built-in aliases: `ll` (ls -lah), `la` (ls -A), `l` (ls -CF)
 
 ## Example Projects
 
@@ -591,9 +668,12 @@ mkdir ~/pyproject
 cd ~/pyproject
 isobox init
 isobox enter
-(isobox) # isobox install python3
-(isobox) # isobox install py3-pip
+
+# python3 and gcc are pre-installed
 (isobox) # python3 --version
+(isobox) # gcc --version
+(isobox) # isobox install py3-pip
+(isobox) # pip --version
 ```
 
 Happy IsoBoxing!
