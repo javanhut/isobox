@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -261,6 +262,19 @@ func buildBaseSystem(cachePath string) error {
 	return nil
 }
 
+// validateHostDependencies checks that essential host tools are available
+func validateHostDependencies() error {
+	requiredTools := []string{"tar", "sudo"}
+
+	for _, tool := range requiredTools {
+		if _, err := exec.LookPath(tool); err != nil {
+			return fmt.Errorf("required tool '%s' not found in PATH. Please install it", tool)
+		}
+	}
+
+	return nil
+}
+
 func installOptimizationTools() {
 	// Check if tools are already installed
 	if isToolInstalled("aria2c") && isToolInstalled("pigz") {
@@ -327,6 +341,11 @@ func Initialize(path string, shell string) (*Environment, error) {
 	// Ensure all required dependencies are installed
 	if err := ensureDependencies(); err != nil {
 		return nil, fmt.Errorf("dependency check failed: %w", err)
+	}
+
+	// Validate host dependencies
+	if err := validateHostDependencies(); err != nil {
+		return nil, fmt.Errorf("host dependency validation failed: %w", err)
 	}
 
 	absPath, err := filepath.Abs(path)
@@ -434,11 +453,8 @@ func (e *Environment) createIsolatedFilesystem() error {
 		return fmt.Errorf("create user home: %w", err)
 	}
 
-	// Set ownership to user (UID 1000)
-	chownCmd := exec.Command("sudo", "chown", "1000:1000", userHome)
-	if err := chownCmd.Run(); err != nil {
-		fmt.Printf("  Warning: failed to set ownership: %v\n", err)
-	}
+	// Set ownership to user (UID 1000) - skip for now to avoid sudo hang
+	fmt.Printf("  Note: User directory ownership will be set when entering environment\n")
 
 	fmt.Printf("  Created: .isobox/home/%s\n", e.Username)
 
@@ -478,14 +494,9 @@ func (e *Environment) createDeviceNodes() error {
 			continue
 		}
 
-		cmd := exec.Command("sudo", "mknod", "-m", "666", devPath, "c", fmt.Sprintf("%d", dev.major), fmt.Sprintf("%d", dev.minor))
-		if err := cmd.Run(); err != nil {
-			// Device node creation failed - this is usually a permission issue
-			// Device nodes will be created when entering the environment (with sudo chroot)
-			fmt.Printf("  Warning: Could not create /dev/%s (will be created when entering environment)\n", dev.name)
-			continue
-		}
-		createdCount++
+		// Skip sudo mknod for now to avoid hanging - devices will be created when entering
+		fmt.Printf("  Note: /dev/%s will be created when entering environment\n", dev.name)
+		continue
 	}
 
 	if createdCount > 0 {
@@ -685,13 +696,22 @@ func (e *Environment) installAlpinePackages(packages []string) error {
 		go func(url string) {
 			defer wg.Done()
 
-			cmd := exec.Command("wget", "-qO-", url)
-			output, err := cmd.Output()
+			resp, err := http.Get(url)
+			if err != nil {
+				return
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != http.StatusOK {
+				return
+			}
+
+			body, err := io.ReadAll(resp.Body)
 			if err != nil {
 				return
 			}
 
-			lines := strings.Split(string(output), "\n")
+			lines := strings.Split(string(body), "\n")
 			for _, line := range lines {
 				for _, pkgName := range packages {
 					if strings.Contains(line, fmt.Sprintf(`href="%s-`, pkgName)) {
@@ -866,29 +886,32 @@ func (e *Environment) installAlpinePackages(packages []string) error {
 	return nil
 }
 
-// downloadPackageFile downloads a single package using aria2c or wget
+// downloadPackageFile downloads a single package file using Go's native HTTP client
 func downloadPackageFile(pkgName, pkgURL string) (string, bool) {
 	tmpFile := fmt.Sprintf("/tmp/%s-%d.apk", pkgName, time.Now().UnixNano())
 
-	// Try aria2c first (faster with multi-connection support)
-	if _, err := exec.LookPath("aria2c"); err == nil {
-		cmd := exec.Command("aria2c",
-			"-x", "4", // 4 connections per download
-			"-s", "4", // split into 4 segments
-			"-k", "1M", // chunk size
-			"--quiet=true",
-			"--allow-overwrite=true",
-			"-d", "/tmp",
-			"-o", filepath.Base(tmpFile),
-			pkgURL)
-		if err := cmd.Run(); err == nil {
-			return tmpFile, true
-		}
+	// Use Go's native HTTP client
+	resp, err := http.Get(pkgURL)
+	if err != nil {
+		return "", false
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", false
 	}
 
-	// Fallback to wget
-	cmd := exec.Command("wget", "-q", "-O", tmpFile, pkgURL)
-	if err := cmd.Run(); err != nil {
+	// Create the file
+	out, err := os.Create(tmpFile)
+	if err != nil {
+		return "", false
+	}
+	defer out.Close()
+
+	// Copy the response body to the file
+	_, err = io.Copy(out, resp.Body)
+	if err != nil {
+		os.Remove(tmpFile) // Clean up on error
 		return "", false
 	}
 
@@ -916,13 +939,22 @@ func (e *Environment) installAlpinePackage(pkgName string) error {
 	var pkgFile string
 
 	for _, baseURL := range repos {
-		cmd := exec.Command("wget", "-qO-", baseURL)
-		output, err := cmd.Output()
+		resp, err := http.Get(baseURL)
+		if err != nil {
+			continue
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			continue
+		}
+
+		body, err := io.ReadAll(resp.Body)
 		if err != nil {
 			continue
 		}
 
-		lines := strings.Split(string(output), "\n")
+		lines := strings.Split(string(body), "\n")
 
 		for _, line := range lines {
 			if strings.Contains(line, fmt.Sprintf(`href="%s-`, pkgName)) {
@@ -949,14 +981,32 @@ func (e *Environment) installAlpinePackage(pkgName string) error {
 
 	tmpFile := fmt.Sprintf("/tmp/%s.apk", pkgName)
 
-	cmd := exec.Command("wget", "-q", "-O", tmpFile, pkgURL)
-	if err := cmd.Run(); err != nil {
+	// Download using Go's native HTTP client
+	resp, err := http.Get(pkgURL)
+	if err != nil {
 		return fmt.Errorf("download failed: %w", err)
 	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("download failed: HTTP %d", resp.StatusCode)
+	}
+
+	out, err := os.Create(tmpFile)
+	if err != nil {
+		return fmt.Errorf("create file failed: %w", err)
+	}
+	defer out.Close()
 	defer os.Remove(tmpFile)
 
+	_, err = io.Copy(out, resp.Body)
+	if err != nil {
+		return fmt.Errorf("write file failed: %w", err)
+	}
+	out.Close()
+
 	// Alpine v3.18 uses APKv2 format which is a standard tar.gz
-	cmd = exec.Command("tar", "-xzf", tmpFile, "-C", e.IsoboxDir)
+	cmd := exec.Command("tar", "-xzf", tmpFile, "-C", e.IsoboxDir)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("extract failed: %w (output: %s)", err, string(output))
 	}
@@ -1199,7 +1249,6 @@ func (e *Environment) setupLdConfig() error {
 	return os.WriteFile(ldSoConf, []byte(content), 0644)
 }
 
-
 func (e *Environment) setupShells() error {
 	fmt.Println("\nSetting up shells (bash, zsh, sh)...")
 
@@ -1220,7 +1269,6 @@ func (e *Environment) setupShells() error {
 	fmt.Println("  sh is provided by BusyBox")
 	return nil
 }
-
 
 func findGitRoot(startDir string) string {
 	dir := startDir
@@ -1518,7 +1566,7 @@ func (e *Environment) unmountPseudoFilesystems() error {
 		if output, err := cmd.CombinedOutput(); err != nil {
 			outputStr := string(output)
 			if !strings.Contains(outputStr, "not mounted") && !strings.Contains(outputStr, "no mount point") &&
-			   !strings.Contains(outputStr, "permission denied") && !strings.Contains(outputStr, "Operation not permitted") {
+				!strings.Contains(outputStr, "permission denied") && !strings.Contains(outputStr, "Operation not permitted") {
 				// Only log unexpected unmount errors, don't fail
 				fmt.Printf("  Warning: Failed to unmount %s: %v\n", mnt, err)
 			}
@@ -1552,12 +1600,26 @@ func (e *Environment) EnterShell() error {
 		}
 	}
 
-	shell := "/bin/" + e.Shell
-	isoboxShell := filepath.Join(e.IsoboxDir, "bin", e.Shell)
+	// Check multiple possible paths for the shell
+	possiblePaths := []string{
+		filepath.Join(e.IsoboxDir, "bin", e.Shell),
+		filepath.Join(e.IsoboxDir, "usr/bin", e.Shell),
+		filepath.Join(e.IsoboxDir, "usr/local/bin", e.Shell),
+	}
 
-	if _, err := os.Stat(isoboxShell); os.IsNotExist(err) {
+	var shell string
+
+	for _, path := range possiblePaths {
+		if _, err := os.Stat(path); err == nil {
+			// Convert absolute isobox path to chroot path
+			relPath := strings.TrimPrefix(path, e.IsoboxDir)
+			shell = relPath
+			break
+		}
+	}
+
+	if shell == "" {
 		fmt.Printf("Warning: Configured shell '%s' not found, falling back to sh\n", e.Shell)
-		isoboxShell = filepath.Join(e.IsoboxDir, "bin/sh")
 		shell = "/bin/sh"
 	}
 
